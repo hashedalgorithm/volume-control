@@ -4,7 +4,7 @@ import AppKit
 func runApp() {
     let app = NSApplication.shared
     app.setActivationPolicy(.accessory) // menu-bar-only, no Dock icon
-    let controller = MenuBarController()
+    let controller = PopoverController()
     _ = controller
     app.run()
 }
