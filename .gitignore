@@ -2,3 +2,5 @@
 .swiftpm/
 *.xcodeproj
 .DS_Store
+HALPlugin/VolumeControlMicMix.driver/Contents/MacOS/VolumeControlMicMix
+HALPlugin/test_harness
