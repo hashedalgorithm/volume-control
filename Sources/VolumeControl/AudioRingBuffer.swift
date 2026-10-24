@@ -17,6 +17,8 @@ final class AudioRingBuffer {
         self.capacityFrames = capacityFrames
     }
 
+    /// Non-interleaved source: one `AudioBuffer` per channel, each holding that
+    /// channel's samples back-to-back.
     func write(from bufferList: UnsafePointer<AudioBufferList>) {
         let abl = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: bufferList))
         guard abl.count > 0 else { return }
@@ -24,12 +26,7 @@ final class AudioRingBuffer {
         lock.lock()
         defer { lock.unlock() }
 
-        if channelBuffers.count != abl.count {
-            channelBuffers = (0..<abl.count).map { _ in [Float](repeating: 0, count: capacityFrames) }
-            writeIndex = 0
-            readIndex = 0
-            filled = 0
-        }
+        ensureChannelCount(abl.count)
 
         let frameCount = Int(abl[0].mDataByteSize) / MemoryLayout<Float>.size
         for channel in 0..<abl.count {
@@ -38,6 +35,38 @@ final class AudioRingBuffer {
                 channelBuffers[channel][(writeIndex + frame) % capacityFrames] = data[frame]
             }
         }
+        advanceWrite(by: frameCount)
+    }
+
+    /// Interleaved source: one buffer holding `channelCount` samples per frame,
+    /// channel-major (L0 R0 L1 R1 ...).
+    func writeInterleaved(_ samples: UnsafePointer<Float>, frameCount: Int, channelCount: Int) {
+        guard channelCount > 0, frameCount > 0 else { return }
+
+        lock.lock()
+        defer { lock.unlock() }
+
+        ensureChannelCount(channelCount)
+
+        for frame in 0..<frameCount {
+            let slot = (writeIndex + frame) % capacityFrames
+            for channel in 0..<channelCount {
+                channelBuffers[channel][slot] = samples[frame * channelCount + channel]
+            }
+        }
+        advanceWrite(by: frameCount)
+    }
+
+    private func ensureChannelCount(_ count: Int) {
+        if channelBuffers.count != count {
+            channelBuffers = (0..<count).map { _ in [Float](repeating: 0, count: capacityFrames) }
+            writeIndex = 0
+            readIndex = 0
+            filled = 0
+        }
+    }
+
+    private func advanceWrite(by frameCount: Int) {
         writeIndex = (writeIndex + frameCount) % capacityFrames
         filled = min(capacityFrames, filled + frameCount)
     }

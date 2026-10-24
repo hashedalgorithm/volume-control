@@ -103,6 +103,7 @@ final class ProcessAudioRoute {
     private var ioProcID: AudioDeviceIOProcID?
     private let engine = AVAudioEngine()
     private let ringBuffer = AudioRingBuffer(capacityFrames: 1 << 16)
+    private var captureFormat = AudioStreamBasicDescription()
 
     var volume: Float = 1.0 {
         didSet { engine.mainMixerNode.outputVolume = volume }
@@ -138,6 +139,7 @@ final class ProcessAudioRoute {
             "create tap aggregate device"
         )
         aggregateDeviceID = newAggregateID
+        captureFormat = try queryCaptureFormat()
 
         try startEngine()
         try startIOProc()
@@ -162,30 +164,52 @@ final class ProcessAudioRoute {
 
     deinit { stop() }
 
-    // MARK: - Playback side (AVAudioEngine -> system default output)
+    /// The tap's *actual* operating format, read straight from the aggregate device's
+    /// own input stream rather than assumed. Guessing wrong here is what produced the
+    /// earlier distorted/unclear audio (wrong sample rate) and the hard-right-panned,
+    /// slowed-down audio after that (assumed non-interleaved when the stream was
+    /// actually interleaved, so one buffer's L/R-alternating samples got read as twice
+    /// as many mono frames and only ever landed in channel 0).
+    private func queryCaptureFormat() throws -> AudioStreamBasicDescription {
+        var streamsAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyStreams,
+            mScope: kAudioObjectPropertyScopeInput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var dataSize: UInt32 = 0
+        try AudioDeviceManager.check(
+            AudioObjectGetPropertyDataSize(aggregateDeviceID, &streamsAddress, 0, nil, &dataSize),
+            "get tap aggregate input stream list size"
+        )
+        var streamIDs = [AudioObjectID](repeating: 0, count: Int(dataSize) / MemoryLayout<AudioObjectID>.size)
+        try AudioDeviceManager.check(
+            AudioObjectGetPropertyData(aggregateDeviceID, &streamsAddress, 0, nil, &dataSize, &streamIDs),
+            "get tap aggregate input streams"
+        )
+        guard let streamID = streamIDs.first else {
+            throw CoreAudioError.osStatus(kAudio_ParamError, "tap aggregate device has no input stream")
+        }
 
-    /// The tap's *actual* operating sample rate, read back from the aggregate device
-    /// rather than assumed. The CoreAudio HAL's canonical format is always Float32,
-    /// non-interleaved; a stereo-mixdown tap is always 2 channels -- only the sample
-    /// rate needs to be discovered. Playing back samples tagged with the wrong sample
-    /// rate is what produced the distorted/unclear audio in the first pass of this
-    /// feature: the source node was told it held samples in the *output hardware's*
-    /// format while the ring buffer actually held samples in the *tap's* format.
-    private func tapSampleRate() -> Float64 {
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyNominalSampleRate,
+        var formatAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioStreamPropertyVirtualFormat,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
-        var rate: Float64 = 48000
-        var size = UInt32(MemoryLayout<Float64>.size)
-        _ = AudioObjectGetPropertyData(aggregateDeviceID, &address, 0, nil, &size, &rate)
-        return rate
+        var format = AudioStreamBasicDescription()
+        var formatSize = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+        try AudioDeviceManager.check(
+            AudioObjectGetPropertyData(streamID, &formatAddress, 0, nil, &formatSize, &format),
+            "get tap stream format"
+        )
+        return format
     }
 
+    // MARK: - Playback side (AVAudioEngine -> system default output)
+
     private func startEngine() throws {
-        guard let sourceFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: tapSampleRate(),
-                                                channels: 2, interleaved: false) else {
+        guard let sourceFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: captureFormat.mSampleRate,
+                                                channels: AVAudioChannelCount(captureFormat.mChannelsPerFrame),
+                                                interleaved: false) else {
             throw CoreAudioError.osStatus(kAudio_ParamError, "could not build source format")
         }
 
@@ -202,10 +226,20 @@ final class ProcessAudioRoute {
     // MARK: - Capture side (tap aggregate IOProc -> ring buffer)
 
     private func startIOProc() throws {
+        let isInterleaved = (captureFormat.mFormatFlags & kAudioFormatFlagIsNonInterleaved) == 0
+        let channelCount = Int(captureFormat.mChannelsPerFrame)
+
         var procID: AudioDeviceIOProcID?
         let status = AudioDeviceCreateIOProcIDWithBlock(&procID, aggregateDeviceID, nil) { [weak self] _, inInputData, _, _, _ in
             guard let self else { return }
-            self.ringBuffer.write(from: inInputData)
+            if isInterleaved {
+                let abl = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inInputData))
+                guard let buffer = abl.first, let data = buffer.mData?.assumingMemoryBound(to: Float.self) else { return }
+                let frameCount = Int(buffer.mDataByteSize) / MemoryLayout<Float>.size / max(channelCount, 1)
+                self.ringBuffer.writeInterleaved(data, frameCount: frameCount, channelCount: channelCount)
+            } else {
+                self.ringBuffer.write(from: inInputData)
+            }
         }
         try AudioDeviceManager.check(status, "create tap IOProc")
         ioProcID = procID
