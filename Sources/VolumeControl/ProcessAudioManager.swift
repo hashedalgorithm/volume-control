@@ -121,11 +121,14 @@ final class ProcessAudioRoute {
     private var tapID: AudioObjectID = 0
     private var tapUUID: String = ""
     private var aggregateDeviceID: AudioObjectID = 0
+    private var captureStreamID: AudioObjectID = 0
     private var ioProcID: AudioDeviceIOProcID?
     private let engine = AVAudioEngine()
     private var sourceNode: AVAudioSourceNode?
     private let ringBuffer = AudioRingBuffer(capacityFrames: 1 << 16)
     private var captureFormat = AudioStreamBasicDescription()
+    private var currentOutputDeviceUID: String?
+    private var formatListenerBlock: AudioObjectPropertyListenerBlock?
 
     var volume: Float = 1.0 {
         didSet { engine.mainMixerNode.outputVolume = volume }
@@ -161,20 +164,24 @@ final class ProcessAudioRoute {
             "create tap aggregate device"
         )
         aggregateDeviceID = newAggregateID
-        captureFormat = try queryCaptureFormat()
+        (captureFormat, captureStreamID) = try queryCaptureFormat()
+        currentOutputDeviceUID = outputDeviceUID
 
         try startEngine(outputDeviceUID: outputDeviceUID)
         try startIOProc()
+        startWatchingForFormatChanges()
     }
 
     /// Switches which physical output device the re-rendered audio plays through,
     /// without touching the capture side (tap keeps running, no audio gap on the
     /// source app's side -- only this route's own playback engine restarts briefly).
     func setOutputDevice(uid: String?) throws {
+        currentOutputDeviceUID = uid
         try startEngine(outputDeviceUID: uid)
     }
 
     func stop() {
+        stopWatchingForFormatChanges()
         engine.stop()
         if let ioProcID {
             AudioDeviceStop(aggregateDeviceID, ioProcID)
@@ -191,6 +198,55 @@ final class ProcessAudioRoute {
         }
     }
 
+    // MARK: - Reacting to the capture format changing at runtime
+    //
+    // The tap mirrors whatever rate the system's audio is currently running at. If the
+    // user switches to an output device with a different native sample rate *while* a
+    // route is live, the old fixed-at-start-time format would go stale: the ring
+    // buffer's producer (IOProc) and consumer (AVAudioSourceNode) would silently
+    // disagree, which is exactly the slowed/distorted/panned class of bug fixed
+    // earlier, just re-triggered by a device change instead of a wrong initial guess.
+    // Watching the stream's own format property and reconfiguring on change keeps it
+    // correct for the life of the route, not just at creation.
+
+    private func startWatchingForFormatChanges() {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioStreamPropertyVirtualFormat,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            self?.handleCaptureFormatChanged()
+        }
+        formatListenerBlock = block
+        AudioObjectAddPropertyListenerBlock(captureStreamID, &address, DispatchQueue.main, block)
+    }
+
+    private func stopWatchingForFormatChanges() {
+        guard let block = formatListenerBlock, captureStreamID != 0 else { return }
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioStreamPropertyVirtualFormat,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        AudioObjectRemovePropertyListenerBlock(captureStreamID, &address, DispatchQueue.main, block)
+        formatListenerBlock = nil
+    }
+
+    private func handleCaptureFormatChanged() {
+        guard let (newFormat, _) = try? queryCaptureFormat() else { return }
+        let formatUnchanged = newFormat.mSampleRate == captureFormat.mSampleRate
+            && newFormat.mChannelsPerFrame == captureFormat.mChannelsPerFrame
+            && newFormat.mFormatFlags == captureFormat.mFormatFlags
+        guard !formatUnchanged else { return }
+
+        captureFormat = newFormat
+        // The IOProc reads captureFormat's channel count/interleaved flag fresh on
+        // every callback (see startIOProc), so only the playback side -- which bakes
+        // the format into a fixed AVAudioFormat -- needs rebuilding.
+        try? startEngine(outputDeviceUID: currentOutputDeviceUID)
+    }
+
     deinit { stop() }
 
     /// The tap's *actual* operating format, read straight from the aggregate device's
@@ -199,7 +255,7 @@ final class ProcessAudioRoute {
     /// slowed-down audio after that (assumed non-interleaved when the stream was
     /// actually interleaved, so one buffer's L/R-alternating samples got read as twice
     /// as many mono frames and only ever landed in channel 0).
-    private func queryCaptureFormat() throws -> AudioStreamBasicDescription {
+    private func queryCaptureFormat() throws -> (AudioStreamBasicDescription, AudioObjectID) {
         var streamsAddress = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyStreams,
             mScope: kAudioObjectPropertyScopeInput,
@@ -230,7 +286,7 @@ final class ProcessAudioRoute {
             AudioObjectGetPropertyData(streamID, &formatAddress, 0, nil, &formatSize, &format),
             "get tap stream format"
         )
-        return format
+        return (format, streamID)
     }
 
     // MARK: - Playback side (AVAudioEngine -> chosen output device, default system output if nil)
@@ -277,12 +333,16 @@ final class ProcessAudioRoute {
     // MARK: - Capture side (tap aggregate IOProc -> ring buffer)
 
     private func startIOProc() throws {
-        let isInterleaved = (captureFormat.mFormatFlags & kAudioFormatFlagIsNonInterleaved) == 0
-        let channelCount = Int(captureFormat.mChannelsPerFrame)
-
         var procID: AudioDeviceIOProcID?
+        // Reads self.captureFormat fresh on every callback (rather than closing over
+        // fixed values) so a runtime format change -- picked up by the property
+        // listener and written to captureFormat on the main queue -- takes effect
+        // here without needing to tear down and recreate the IOProc itself.
         let status = AudioDeviceCreateIOProcIDWithBlock(&procID, aggregateDeviceID, nil) { [weak self] _, inInputData, _, _, _ in
             guard let self else { return }
+            let format = self.captureFormat
+            let isInterleaved = (format.mFormatFlags & kAudioFormatFlagIsNonInterleaved) == 0
+            let channelCount = Int(format.mChannelsPerFrame)
             if isInterleaved {
                 let abl = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inInputData))
                 guard let buffer = abl.first, let data = buffer.mData?.assumingMemoryBound(to: Float.self) else { return }

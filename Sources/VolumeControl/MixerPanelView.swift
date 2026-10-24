@@ -1,14 +1,28 @@
 import SwiftUI
 
+/// Mirrors macOS's own volume icon convention: muted gets a distinct slashed icon,
+/// and unmuted reflects how loud the level actually is (silent/quiet/medium/loud)
+/// rather than a flat two-state toggle.
+private func speakerIconName(isMuted: Bool, volume: Float) -> String {
+    if isMuted { return "speaker.slash.fill" }
+    switch volume {
+    case ..<0.001: return "speaker.fill"
+    case ..<0.34: return "speaker.wave.1.fill"
+    case ..<0.67: return "speaker.wave.2.fill"
+    default: return "speaker.wave.3.fill"
+    }
+}
+
 @available(macOS 14.2, *)
 struct MixerPanelView: View {
     @ObservedObject var model: AudioMixerModel
     var onQuit: () -> Void
 
-    /// Approximate rendered height of one `AppRowView` (icon row + name/mute/% line +
-    /// slider/device line + vertical padding). Used to reserve enough list height for
-    /// a minimum row count without scrolling.
-    fileprivate static let appRowHeight: CGFloat = 54
+    /// Beyond this many app rows, the list scrolls with a fixed, screen-safe height
+    /// instead of growing the popover further -- a forced `minHeight` here previously
+    /// pushed the whole popover tall enough that AppKit repositioned it off the top of
+    /// the screen with no way to reach the controls to close it.
+    private static let maxRowsBeforeScroll = 3
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -59,6 +73,19 @@ struct MixerPanelView: View {
                         .font(.callout)
                         .padding(.horizontal, 14)
                         .padding(.bottom, 14)
+                } else if model.apps.count <= Self.maxRowsBeforeScroll {
+                    // Plain VStack, no ScrollView: lets SwiftUI size the popover to
+                    // its true natural height with no ambiguity, which is what
+                    // actually guarantees no scrollbar up to this many rows.
+                    VStack(spacing: 2) {
+                        ForEach(model.apps) { row in
+                            AppRowView(row: row, devices: model.devices,
+                                       onVolumeChange: { model.setVolume($0, for: row) },
+                                       onToggleMute: { model.toggleMute(for: row) },
+                                       onDeviceChange: { model.setOutputDevice($0, for: row) })
+                        }
+                    }
+                    .padding(.bottom, 8)
                 } else {
                     ScrollView {
                         VStack(spacing: 2) {
@@ -71,12 +98,7 @@ struct MixerPanelView: View {
                         }
                         .padding(.bottom, 8)
                     }
-                    // Reserve room for at least 3 rows even when fewer apps are
-                    // playing, so the list doesn't scroll until there are more than
-                    // that; caps out so a long app list still scrolls instead of
-                    // growing the popover unbounded.
-                    .frame(minHeight: min(CGFloat(model.apps.count), 3) * Self.appRowHeight,
-                           maxHeight: 6 * Self.appRowHeight)
+                    .frame(height: 260) // fixed, screen-safe; longer lists scroll within this
                 }
             }
 
@@ -118,7 +140,7 @@ private struct MasterVolumeRowView: View {
                     Spacer()
 
                     Button(action: onToggleMute) {
-                        Image(systemName: isMuted ? "speaker.slash.fill" : "speaker.fill")
+                        Image(systemName: speakerIconName(isMuted: isMuted, volume: volume))
                             .font(.system(size: 11))
                             .foregroundStyle(isMuted ? .red : .secondary)
                     }
@@ -172,7 +194,7 @@ private struct AppRowView: View {
                     Spacer()
 
                     Button(action: onToggleMute) {
-                        Image(systemName: row.isMuted ? "speaker.slash.fill" : "speaker.fill")
+                        Image(systemName: speakerIconName(isMuted: row.isMuted, volume: row.volume))
                             .font(.system(size: 11))
                             .foregroundStyle(row.isMuted ? .red : .secondary)
                     }
