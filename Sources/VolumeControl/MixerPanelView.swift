@@ -62,6 +62,7 @@ struct MixerPanelView: View {
     @ObservedObject var inputModel: InputMixEngine
     var onQuit: () -> Void
     var onClose: () -> Void
+    var onPreferences: () -> Void
 
     @State private var selectedTab: MixerTab = .output
 
@@ -114,11 +115,20 @@ struct MixerPanelView: View {
 
             Divider()
 
-            Button("Quit Volume Control", action: onQuit)
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-                .font(.callout)
-                .padding(12)
+            HStack {
+                Button("Quit", action: onQuit)
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .font(.callout)
+
+                Spacer()
+
+                Button("Preferences\u{2026}", action: onPreferences)
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .font(.callout)
+            }
+            .padding(12)
         }
         .frame(width: 340)
         // NSPopover used to supply this chrome automatically; a plain NSWindow-hosted
@@ -190,9 +200,13 @@ private struct CollapsibleSection<Content: View>: View {
 @available(macOS 14.2, *)
 private struct OutputTabView: View {
     @ObservedObject var model: AudioMixerModel
-    @State private var isSystemExpanded = true
-    @State private var isDeviceLevelsExpanded = false
-    @State private var isApplicationsExpanded = true
+    // Doubles as both "current state" and "default for next launch" -- the same
+    // UserDefaults keys Preferences reads/writes, so manually toggling a section here
+    // and setting its default in Preferences are the same action, not two things that
+    // can drift out of sync.
+    @AppStorage(PreferenceKeys.systemExpanded) private var isSystemExpanded = true
+    @AppStorage(PreferenceKeys.deviceLevelsExpanded) private var isDeviceLevelsExpanded = false
+    @AppStorage(PreferenceKeys.applicationsExpanded) private var isApplicationsExpanded = true
 
     /// Beyond this many app rows, the list scrolls with a fixed, screen-safe height
     /// instead of growing the popover further -- a forced `minHeight` here previously
