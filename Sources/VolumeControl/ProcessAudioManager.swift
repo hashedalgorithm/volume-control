@@ -123,7 +123,9 @@ final class ProcessAudioRoute {
     private var aggregateDeviceID: AudioObjectID = 0
     private var captureStreamID: AudioObjectID = 0
     private var ioProcID: AudioDeviceIOProcID?
-    private let engine = AVAudioEngine()
+    /// Rebuilt from scratch (not reused in place) every time startEngine() runs after
+    /// the first call -- see startEngine() for why.
+    private var engine = AVAudioEngine()
     private var sourceNode: AVAudioSourceNode?
     private let ringBuffer = AudioRingBuffer(capacityFrames: 1 << 16)
     private var captureFormat = AudioStreamBasicDescription()
@@ -339,11 +341,18 @@ final class ProcessAudioRoute {
     // MARK: - Playback side (AVAudioEngine -> chosen output device, default system output if nil)
 
     private func startEngine(outputDeviceUID: String?) throws {
+        // A fresh AVAudioEngine instance every time, rather than reusing the same one
+        // across stop()/reconfigure/start() cycles: reusing it was the actual bug
+        // behind "picked a per-app output device, no audio, picked it again (or
+        // anything else that re-ran this), audio came back." AVAudioEngine's output
+        // unit doesn't reliably re-bind to a new device when
+        // kAudioOutputUnitProperty_CurrentDevice is changed on an already-initialized,
+        // already-started output unit -- it can silently keep rendering into the old
+        // device's now-stale connection until something forces a full reset. A brand
+        // new engine has no such state to go stale.
         engine.stop()
-        if let oldNode = sourceNode {
-            engine.detach(oldNode)
-            sourceNode = nil
-        }
+        engine = AVAudioEngine()
+        sourceNode = nil
 
         if let outputDeviceUID {
             guard let device = AudioDeviceManager.outputDevices().first(where: { $0.uid == outputDeviceUID }) else {
