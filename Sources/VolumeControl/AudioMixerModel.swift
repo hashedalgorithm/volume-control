@@ -31,6 +31,8 @@ final class AudioMixerModel: ObservableObject {
     @Published private(set) var apps: [AppRow] = []
     @Published private(set) var systemSoundsRow: AppRow?
     @Published private(set) var devices: [AudioDevice] = []
+    @Published private(set) var masterVolume: Float = 1.0
+    @Published private(set) var isMasterMuted: Bool = false
 
     private var activeRoutes: [pid_t: ProcessAudioRoute] = [:]
     private var volumes: [pid_t: Float] = [:]
@@ -58,6 +60,13 @@ final class AudioMixerModel: ObservableObject {
 
     func refresh() {
         devices = AudioDeviceManager.outputDevices()
+        // Ground truth for master volume/mute lives in the OS (volume keys, Control
+        // Center can change it outside this app), so read it fresh each time rather
+        // than tracking our own copy -- unlike per-app volume, which only we control.
+        if let liveVolume = AudioDeviceManager.masterVolume() {
+            masterVolume = liveVolume
+        }
+        isMasterMuted = AudioDeviceManager.isMasterMuted()
         refreshSystemSounds()
 
         let processes = AudioProcessManager.runningAudioProcesses()
@@ -180,6 +189,16 @@ final class AudioMixerModel: ObservableObject {
         } catch {
             NSLog("VolumeControl: failed to switch output device for pid \(row.id): \(error)")
         }
+    }
+
+    func setMasterVolume(_ volume: Float) {
+        masterVolume = volume
+        AudioDeviceManager.setMasterVolume(volume)
+    }
+
+    func toggleMasterMute() {
+        isMasterMuted.toggle()
+        AudioDeviceManager.setMasterMuted(isMasterMuted)
     }
 
     func shutdown() {

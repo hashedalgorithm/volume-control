@@ -14,22 +14,26 @@ struct MixerPanelView: View {
 
             Divider()
 
-            if let systemRow = model.systemSoundsRow {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("SYSTEM")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 14)
-                        .padding(.top, 10)
+            VStack(alignment: .leading, spacing: 8) {
+                Text("SYSTEM")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 14)
+                    .padding(.top, 10)
 
+                MasterVolumeRowView(volume: model.masterVolume, isMuted: model.isMasterMuted,
+                                     onVolumeChange: { model.setMasterVolume($0) },
+                                     onToggleMute: { model.toggleMasterMute() })
+
+                if let systemRow = model.systemSoundsRow {
                     AppRowView(row: systemRow, devices: model.devices,
                                onVolumeChange: { model.setVolume($0, for: systemRow) },
                                onToggleMute: { model.toggleMute(for: systemRow) },
                                onDeviceChange: { model.setOutputDevice($0, for: systemRow) })
                 }
-
-                Divider()
             }
+
+            Divider()
 
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
@@ -75,6 +79,55 @@ struct MixerPanelView: View {
                 .padding(12)
         }
         .frame(width: 340)
+    }
+}
+
+@available(macOS 14.2, *)
+private struct MasterVolumeRowView: View {
+    let volume: Float
+    let isMuted: Bool
+    let onVolumeChange: (Float) -> Void
+    let onToggleMute: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "speaker.wave.3.fill")
+                .font(.system(size: 17))
+                .foregroundStyle(.secondary)
+                .frame(width: 26, height: 26)
+                .opacity(isMuted ? 0.5 : 1.0)
+                .padding(.top, 2)
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    Text("Master Volume")
+                        .font(.system(size: 12, weight: .medium))
+                        .lineLimit(1)
+                        .opacity(isMuted ? 0.5 : 1.0)
+
+                    Spacer()
+
+                    Button(action: onToggleMute) {
+                        Image(systemName: isMuted ? "speaker.slash.fill" : "speaker.fill")
+                            .font(.system(size: 11))
+                            .foregroundStyle(isMuted ? .red : .secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help(isMuted ? "Unmute" : "Mute")
+
+                    Text("\(Int(volume * 100))%")
+                        .font(.system(size: 11, weight: .regular).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 32, alignment: .trailing)
+                        .opacity(isMuted ? 0.5 : 1.0)
+                }
+
+                Slider(value: Binding(get: { volume }, set: onVolumeChange), in: 0...1)
+                    .opacity(isMuted ? 0.5 : 1.0)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 6)
     }
 }
 

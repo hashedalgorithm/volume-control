@@ -1,3 +1,4 @@
+import AudioToolbox
 import CoreAudio
 import Foundation
 
@@ -40,7 +41,7 @@ enum AudioDeviceManager {
         }
     }
 
-    static func defaultOutputDeviceUID() -> String? {
+    static func defaultOutputDeviceID() -> AudioObjectID? {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDefaultOutputDevice,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -49,8 +50,65 @@ enum AudioDeviceManager {
         var deviceID = AudioObjectID(0)
         var size = UInt32(MemoryLayout<AudioObjectID>.size)
         let status = AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &deviceID)
-        guard status == noErr else { return nil }
+        return status == noErr ? deviceID : nil
+    }
+
+    static func defaultOutputDeviceUID() -> String? {
+        guard let deviceID = defaultOutputDeviceID() else { return nil }
         return stringProperty(deviceID, selector: kAudioDevicePropertyDeviceUID)
+    }
+
+    /// The real output-device volume -- the same one the volume keys and Control
+    /// Center's slider move. Uses `AudioHardwareService...` rather than plain
+    /// `AudioObjectGetPropertyData`/`kAudioDevicePropertyVolumeScalar` because the
+    /// service API averages/distributes across however many channels the device
+    /// actually has; that's what the system's own volume control uses under the hood.
+    static func masterVolume() -> Float? {
+        guard let deviceID = defaultOutputDeviceID() else { return nil }
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwareServiceDeviceProperty_VirtualMainVolume,
+            mScope: kAudioObjectPropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var volume: Float32 = 0
+        var size = UInt32(MemoryLayout<Float32>.size)
+        let status = AudioHardwareServiceGetPropertyData(deviceID, &address, 0, nil, &size, &volume)
+        return status == noErr ? volume : nil
+    }
+
+    static func setMasterVolume(_ volume: Float) {
+        guard let deviceID = defaultOutputDeviceID() else { return }
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwareServiceDeviceProperty_VirtualMainVolume,
+            mScope: kAudioObjectPropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var value = Float32(volume)
+        _ = AudioHardwareServiceSetPropertyData(deviceID, &address, 0, nil, UInt32(MemoryLayout<Float32>.size), &value)
+    }
+
+    static func isMasterMuted() -> Bool {
+        guard let deviceID = defaultOutputDeviceID() else { return false }
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyMute,
+            mScope: kAudioObjectPropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var value: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        let status = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &value)
+        return status == noErr && value != 0
+    }
+
+    static func setMasterMuted(_ muted: Bool) {
+        guard let deviceID = defaultOutputDeviceID() else { return }
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyMute,
+            mScope: kAudioObjectPropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var value: UInt32 = muted ? 1 : 0
+        _ = AudioObjectSetPropertyData(deviceID, &address, 0, nil, UInt32(MemoryLayout<UInt32>.size), &value)
     }
 
     /// Excludes virtual/aggregate devices (e.g. "Microsoft Teams Audio", Zoom's or our
