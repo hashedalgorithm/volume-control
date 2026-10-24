@@ -12,6 +12,29 @@ struct InputTabView: View {
                 NotInstalledView(model: model)
             } else {
                 VStack(alignment: .leading, spacing: 0) {
+                    HStack {
+                        Text(model.isEnabled ? "Input Mixing: On" : "Input Mixing: Off")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(model.isEnabled ? .primary : .secondary)
+
+                        Spacer()
+
+                        Toggle("", isOn: Binding(get: { model.isEnabled }, set: { model.setEnabled($0) }))
+                            .toggleStyle(.switch)
+                            .labelsHidden()
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.top, 10)
+                    .padding(.bottom, 4)
+
+                    Text("Off by default. Nothing touches your mic until this is on.")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 14)
+                        .padding(.bottom, 10)
+
+                    Divider()
+
                     VStack(alignment: .leading, spacing: 8) {
                         Text("MICROPHONE")
                             .font(.system(size: 11, weight: .bold))
@@ -22,6 +45,7 @@ struct InputTabView: View {
                         MicRowView(sensitivity: model.micSensitivity, isMuted: model.isMicMuted,
                                    onSensitivityChange: { model.micSensitivity = $0 },
                                    onToggleMute: { model.toggleMicMute() })
+                            .opacity(model.isEnabled ? 1.0 : 0.5)
                     }
 
                     Divider()
@@ -71,7 +95,6 @@ struct InputTabView: View {
                 }
             }
         }
-        .onAppear { model.activate() }
     }
 }
 

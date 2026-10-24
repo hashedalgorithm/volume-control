@@ -158,7 +158,14 @@ struct MicMixAppRow: Identifiable, Equatable {
 @available(macOS 14.2, *)
 final class InputMixEngine: ObservableObject {
     @Published private(set) var isDeviceInstalled = false
-    @Published private(set) var isActive = false
+    /// Explicit master on/off for the whole input-mixing setup -- off by default.
+    /// Nothing touches the microphone (no capture, no permission prompt) until this is
+    /// turned on; turning it off fully stops mic capture and every included app's tap,
+    /// it doesn't just mute them. Previously this started automatically the first time
+    /// the Input tab was viewed and then ran forever in the background, which is what
+    /// was picking up and passing through typing noise etc. with no way to stop it
+    /// short of quitting the app.
+    @Published private(set) var isEnabled = false
     @Published var micSensitivity: Float = 1.0 { didSet { applyMicVolume() } }
     @Published private(set) var isMicMuted = false
     @Published private(set) var apps: [MicMixAppRow] = []
@@ -179,57 +186,64 @@ final class InputMixEngine: ObservableObject {
 
     private static let genericAppIcon = NSWorkspace.shared.icon(for: .application)
     private static let missingPollsBeforeStop = 3
-    private var isActivated = false
 
     init() {
         refreshDeviceAvailability()
-    }
-
-    /// Starting mic capture (and so requesting the microphone permission prompt) the
-    /// moment the app launches, before the user has ever looked at the Input tab,
-    /// would be a surprising ask. Only begins polling/capturing once that tab is
-    /// actually viewed for the first time; after that it keeps running in the
-    /// background (including with the panel closed) since the point of this feature is
-    /// mixing into a live call regardless of whether the UI is open.
-    func activate() {
-        guard !isActivated else { return }
-        isActivated = true
-        refresh()
+        // Always-on lightweight polling: device-installed status and the list of apps
+        // currently playing audio. Neither touches the mic or starts anything -- that
+        // only happens via setEnabled(true), an explicit user action.
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             self?.refresh()
         }
     }
 
-    func refresh() {
-        refreshDeviceAvailability()
-        guard isDeviceInstalled else { return }
-
-        if !isActive {
+    /// The master on/off switch. Turning on starts mic capture (first time: triggers
+    /// the mic permission prompt) and the engine, and attaches any apps already marked
+    /// included. Turning off fully tears all of that down -- app selections and mic
+    /// sensitivity are kept so turning back on restores the prior setup instantly.
+    func setEnabled(_ enabled: Bool) {
+        guard enabled != isEnabled else { return }
+        if enabled {
+            guard isDeviceInstalled else { return }
             do {
                 try start()
+                isEnabled = true
+                for pid in includedApps where appSources[pid] == nil {
+                    if let process = AudioProcessManager.runningAudioProcesses().first(where: { $0.pid == pid }) {
+                        try? addAppSource(process)
+                    }
+                }
             } catch {
                 NSLog("VolumeControl: failed to start input mix engine: \(error)")
-                return
             }
+        } else {
+            isEnabled = false
+            stopEngineAndSources()
         }
+    }
+
+    func refresh() {
+        refreshDeviceAvailability()
 
         let processes = AudioProcessManager.runningAudioProcesses()
         let currentPIDs = Set(processes.map(\.pid))
 
-        for pid in Array(appSources.keys) where !currentPIDs.contains(pid) {
-            let streak = (missingStreak[pid] ?? 0) + 1
-            missingStreak[pid] = streak
-            if streak >= Self.missingPollsBeforeStop {
-                removeAppSource(pid: pid)
+        if isEnabled {
+            for pid in Array(appSources.keys) where !currentPIDs.contains(pid) {
+                let streak = (missingStreak[pid] ?? 0) + 1
+                missingStreak[pid] = streak
+                if streak >= Self.missingPollsBeforeStop {
+                    removeAppSource(pid: pid)
+                }
             }
-        }
-        for process in processes where includedApps.contains(process.pid) {
-            missingStreak[process.pid] = 0
-            if appSources[process.pid] == nil {
-                do {
-                    try addAppSource(process)
-                } catch {
-                    NSLog("VolumeControl: failed to add mic-mix source for \(process.bundleID): \(error)")
+            for process in processes where includedApps.contains(process.pid) {
+                missingStreak[process.pid] = 0
+                if appSources[process.pid] == nil {
+                    do {
+                        try addAppSource(process)
+                    } catch {
+                        NSLog("VolumeControl: failed to add mic-mix source for \(process.bundleID): \(error)")
+                    }
                 }
             }
         }
@@ -246,14 +260,16 @@ final class InputMixEngine: ObservableObject {
         }.sorted { $0.name < $1.name }
     }
 
+    /// Toggling inclusion works whether or not the master switch is on -- if off, this
+    /// just records the selection for when it's turned on; if on, it takes effect
+    /// immediately.
     func toggleInclude(for row: MicMixAppRow) {
-        guard isDeviceInstalled else { return }
         if includedApps.contains(row.id) {
             includedApps.remove(row.id)
-            removeAppSource(pid: row.id)
+            if isEnabled { removeAppSource(pid: row.id) }
         } else {
             includedApps.insert(row.id)
-            if let process = AudioProcessManager.runningAudioProcesses().first(where: { $0.pid == row.id }) {
+            if isEnabled, let process = AudioProcessManager.runningAudioProcesses().first(where: { $0.pid == row.id }) {
                 do {
                     try addAppSource(process)
                 } catch {
@@ -278,14 +294,19 @@ final class InputMixEngine: ObservableObject {
     }
 
     func shutdown() {
+        refreshTimer?.invalidate()
+        isEnabled = false
+        stopEngineAndSources()
+    }
+
+    deinit { shutdown() }
+
+    private func stopEngineAndSources() {
         for pid in Array(appSources.keys) { removeAppSource(pid: pid) }
         micCaptureEngine.inputNode.removeTap(onBus: 0)
         micCaptureEngine.stop()
         engine.stop()
-        isActive = false
     }
-
-    deinit { shutdown() }
 
     // MARK: - Setup
 
@@ -333,7 +354,6 @@ final class InputMixEngine: ObservableObject {
 
         try startMicCapture()
         try engine.start()
-        isActive = true
     }
 
     private func startMicCapture() throws {
