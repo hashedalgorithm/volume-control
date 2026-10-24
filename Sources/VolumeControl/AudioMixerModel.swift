@@ -34,6 +34,11 @@ struct DeviceLevelRow: Identifiable, Equatable {
     var isMuted: Bool
 }
 
+enum DeviceRoutingMode: String {
+    case single = "Single"
+    case multiple = "Multiple"
+}
+
 /// Keeps one `ProcessAudioRoute` running per app that's currently playing audio, so
 /// each row's slider is live the moment the app shows up -- matching SoundSource's
 /// always-on per-app volume knob rather than a manual "enable routing" step.
@@ -51,6 +56,9 @@ final class AudioMixerModel: ObservableObject {
     @Published private(set) var masterVolume: Float = 1.0
     @Published private(set) var isMasterMuted: Bool = false
     @Published private(set) var deviceLevels: [DeviceLevelRow] = []
+    /// pids currently mid-device-switch: muted and showing a loading indicator instead
+    /// of the device icon (see setOutputDevice(_:for:)).
+    @Published private(set) var pendingDeviceSwitchPIDs: Set<pid_t> = []
 
     private var activeRoutes: [pid_t: ProcessAudioRoute] = [:]
     private var volumes: [pid_t: Float] = [:]
@@ -216,14 +224,41 @@ final class AudioMixerModel: ObservableObject {
         updateRow(id: row.id) { $0.isMuted = self.muted.contains(row.id) }
     }
 
+    /// Switching the output device the first time can report success before the device
+    /// -- especially Bluetooth -- is actually flowing audio yet (observed directly:
+    /// the first bind sometimes doesn't produce sound, but a prompt second bind always
+    /// does). Rather than make the user manually retry, this mutes the app, rebinds,
+    /// waits for the device to settle, rebinds again to reliably catch it up, then
+    /// unmutes -- with pendingDeviceSwitchPIDs driving a loading indicator in place of
+    /// the device icon for that window so it's visibly "in progress," not silently
+    /// broken.
     func setOutputDevice(_ device: AudioDevice, for row: AppRow) {
         outputDeviceUIDs[row.id] = device.uid
         updateRow(id: row.id) { $0.outputDeviceUID = device.uid }
         guard let route = activeRoutes[row.id] else { return }
+
+        let pid = row.id
+        let restoreVolume = appliedVolume(for: pid)
+        pendingDeviceSwitchPIDs.insert(pid)
+        route.volume = 0
+
         do {
             try route.setOutputDevice(uid: device.uid)
         } catch {
-            NSLog("VolumeControl: failed to switch output device for pid \(row.id): \(error)")
+            NSLog("VolumeControl: failed to switch output device for pid \(pid): \(error)")
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+            guard let self else { return }
+            if let route = self.activeRoutes[pid] {
+                do {
+                    try route.setOutputDevice(uid: device.uid)
+                } catch {
+                    NSLog("VolumeControl: failed to re-confirm output device for pid \(pid): \(error)")
+                }
+                route.volume = restoreVolume
+            }
+            self.pendingDeviceSwitchPIDs.remove(pid)
         }
     }
 
@@ -235,6 +270,46 @@ final class AudioMixerModel: ObservableObject {
     func toggleMasterMute() {
         isMasterMuted.toggle()
         AudioDeviceManager.setMasterMuted(isMasterMuted)
+    }
+
+    /// Purely derived from the actual current per-row output device selections -- not
+    /// separately stored state. "Single" whenever every row with a destination (System
+    /// Sounds + every app) points at the same device; "Multiple" the moment any of them
+    /// diverges, including via a manual per-app device pick while in Single mode.
+    var deviceMode: DeviceRoutingMode {
+        var uids = Set<String>()
+        if let uid = systemSoundsRow?.outputDeviceUID { uids.insert(uid) }
+        for app in apps {
+            if let uid = app.outputDeviceUID { uids.insert(uid) }
+        }
+        return uids.count <= 1 ? .single : .multiple
+    }
+
+    /// Consolidates System Sounds and every app onto one device: a headphone/earbud-type
+    /// device if one's connected (treated as first priority, per request), else the
+    /// built-in speakers, else whatever the system default currently is.
+    func consolidateToSingleDevice() {
+        guard let target = preferredSingleDevice() else { return }
+        if let systemRow = systemSoundsRow {
+            setOutputDevice(target, for: systemRow)
+        }
+        for app in apps {
+            setOutputDevice(target, for: app)
+        }
+    }
+
+    private func preferredSingleDevice() -> AudioDevice? {
+        let headphoneLikeIcons: Set<String> = ["headphones", "earbuds", "airpods", "airpodsmax", "beats.headphones"]
+        if let headphones = devices.first(where: { headphoneLikeIcons.contains($0.iconSymbolName) }) {
+            return headphones
+        }
+        if let builtIn = devices.first(where: { $0.transportType == kAudioDeviceTransportTypeBuiltIn }) {
+            return builtIn
+        }
+        if let defaultUID = AudioDeviceManager.defaultOutputDeviceUID(), let match = devices.first(where: { $0.uid == defaultUID }) {
+            return match
+        }
+        return devices.first
     }
 
     func setDeviceVolume(_ volume: Float, for row: DeviceLevelRow) {

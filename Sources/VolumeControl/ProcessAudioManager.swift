@@ -361,6 +361,13 @@ final class ProcessAudioRoute {
             guard let outputAudioUnit = engine.outputNode.audioUnit else {
                 throw CoreAudioError.osStatus(kAudio_ParamError, "engine has no output audio unit")
             }
+            // kAudioOutputUnitProperty_CurrentDevice is only settable while the unit is
+            // uninitialized (Apple's documented contract for this property); merely
+            // touching .audioUnit on a fresh engine can already have lazily
+            // initialized it, so the set below could silently not fully take effect
+            // without this -- the likely cause of needing multiple attempts before a
+            // picked device actually produced audio.
+            AudioUnitUninitialize(outputAudioUnit)
             var deviceID = device.id
             try AudioDeviceManager.check(
                 AudioUnitSetProperty(outputAudioUnit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0,

@@ -18,6 +18,44 @@ private enum MixerTab: String, CaseIterable {
     case input = "Input"
 }
 
+/// Two-segment switch next to the tab bar: Single on the left, Multiple on the right,
+/// with a sliding highlight showing the actual current state (derived, not a free
+/// choice). Tapping Single consolidates every app onto one device; tapping Multiple
+/// does nothing by design -- there's no real "force them apart" action, only
+/// "consolidate to one" -- so the highlight will just snap back to wherever reality
+/// actually is on the next refresh if it doesn't match what was tapped.
+@available(macOS 14.2, *)
+private struct DeviceModeSwitchView: View {
+    let mode: DeviceRoutingMode
+    let onConsolidate: () -> Void
+
+    private let segmentWidth: CGFloat = 46
+    private let segmentHeight: CGFloat = 18
+
+    var body: some View {
+        HStack(spacing: 0) {
+            segment(.single, title: "Single")
+            segment(.multiple, title: "Multiple")
+        }
+        .padding(2)
+        .background(Capsule().fill(.secondary.opacity(0.12)))
+        .animation(.easeInOut(duration: 0.2), value: mode)
+    }
+
+    private func segment(_ segmentMode: DeviceRoutingMode, title: String) -> some View {
+        Button {
+            if segmentMode == .single { onConsolidate() }
+        } label: {
+            Text(title)
+                .font(.system(size: 9, weight: .medium))
+                .frame(width: segmentWidth, height: segmentHeight)
+                .foregroundStyle(mode == segmentMode ? Color.white : Color.secondary)
+                .background(mode == segmentMode ? Capsule().fill(Color.accentColor) : nil)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 @available(macOS 14.2, *)
 struct MixerPanelView: View {
     @ObservedObject var model: AudioMixerModel
@@ -46,13 +84,22 @@ struct MixerPanelView: View {
             .padding([.top, .horizontal], 14)
             .padding(.bottom, 10)
 
-            Picker("", selection: $selectedTab) {
-                ForEach(MixerTab.allCases, id: \.self) { tab in
-                    Text(tab.rawValue).tag(tab)
+            HStack {
+                Picker("", selection: $selectedTab) {
+                    ForEach(MixerTab.allCases, id: \.self) { tab in
+                        Text(tab.rawValue).tag(tab)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+
+                Spacer()
+
+                if selectedTab == .output, !model.deviceLevels.isEmpty {
+                    DeviceModeSwitchView(mode: model.deviceMode, onConsolidate: { model.consolidateToSingleDevice() })
                 }
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
             .padding(.horizontal, 14)
             .padding(.bottom, 10)
 
@@ -98,6 +145,7 @@ struct MixerPanelView: View {
 @available(macOS 14.2, *)
 private struct CollapsibleSection<Content: View>: View {
     let title: String
+    var trailingLabel: String?
     @Binding var isExpanded: Bool
     @ViewBuilder let content: () -> Content
 
@@ -111,6 +159,11 @@ private struct CollapsibleSection<Content: View>: View {
                         .font(.system(size: 11, weight: .bold))
                         .foregroundStyle(.secondary)
                     Spacer()
+                    if let trailingLabel {
+                        Text(trailingLabel)
+                            .font(.system(size: 11, weight: .regular).monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
                     Image(systemName: "chevron.right")
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(.secondary)
@@ -149,7 +202,7 @@ private struct OutputTabView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            CollapsibleSection(title: "SYSTEM", isExpanded: $isSystemExpanded) {
+            CollapsibleSection(title: "SYSTEM", trailingLabel: "\(Int(model.masterVolume * 100))%", isExpanded: $isSystemExpanded) {
                 VStack(spacing: 2) {
                     MasterVolumeRowView(volume: model.masterVolume, isMuted: model.isMasterMuted,
                                          onVolumeChange: { model.setMasterVolume($0) },
@@ -157,6 +210,7 @@ private struct OutputTabView: View {
 
                     if let systemRow = model.systemSoundsRow {
                         AppRowView(row: systemRow, devices: model.devices,
+                                   isDeviceSwitchPending: model.pendingDeviceSwitchPIDs.contains(systemRow.id),
                                    onVolumeChange: { model.setVolume($0, for: systemRow) },
                                    onToggleMute: { model.toggleMute(for: systemRow) },
                                    onDeviceChange: { model.setOutputDevice($0, for: systemRow) })
@@ -167,7 +221,7 @@ private struct OutputTabView: View {
             Divider()
 
             if !model.deviceLevels.isEmpty {
-                CollapsibleSection(title: "DEVICE LEVELS", isExpanded: $isDeviceLevelsExpanded) {
+                CollapsibleSection(title: "DEVICE LEVELS", trailingLabel: model.deviceMode.rawValue, isExpanded: $isDeviceLevelsExpanded) {
                     VStack(spacing: 2) {
                         ForEach(model.deviceLevels) { row in
                             DeviceLevelRowView(row: row,
@@ -180,7 +234,7 @@ private struct OutputTabView: View {
                 Divider()
             }
 
-            CollapsibleSection(title: "APPLICATIONS", isExpanded: $isApplicationsExpanded) {
+            CollapsibleSection(title: "APPLICATIONS", trailingLabel: "\(model.apps.count)", isExpanded: $isApplicationsExpanded) {
                 if model.apps.isEmpty {
                     Text("No apps currently playing audio")
                         .foregroundStyle(.secondary)
@@ -193,6 +247,7 @@ private struct OutputTabView: View {
                     VStack(spacing: 2) {
                         ForEach(model.apps) { row in
                             AppRowView(row: row, devices: model.devices,
+                                       isDeviceSwitchPending: model.pendingDeviceSwitchPIDs.contains(row.id),
                                        onVolumeChange: { model.setVolume($0, for: row) },
                                        onToggleMute: { model.toggleMute(for: row) },
                                        onDeviceChange: { model.setOutputDevice($0, for: row) })
@@ -203,6 +258,7 @@ private struct OutputTabView: View {
                         VStack(spacing: 2) {
                             ForEach(model.apps) { row in
                                 AppRowView(row: row, devices: model.devices,
+                                           isDeviceSwitchPending: model.pendingDeviceSwitchPIDs.contains(row.id),
                                            onVolumeChange: { model.setVolume($0, for: row) },
                                            onToggleMute: { model.toggleMute(for: row) },
                                            onDeviceChange: { model.setOutputDevice($0, for: row) })
@@ -319,6 +375,7 @@ private struct MasterVolumeRowView: View {
 private struct AppRowView: View {
     let row: AppRow
     let devices: [AudioDevice]
+    var isDeviceSwitchPending: Bool = false
     let onVolumeChange: (Float) -> Void
     let onToggleMute: () -> Void
     let onDeviceChange: (AudioDevice) -> Void
@@ -379,28 +436,40 @@ private struct AppRowView: View {
                     Slider(value: Binding(get: { row.volume }, set: onVolumeChange), in: 0...1)
                         .opacity(row.isMuted ? 0.5 : 1.0)
 
-                    Menu {
-                        ForEach(devices) { device in
-                            Button {
-                                onDeviceChange(device)
-                            } label: {
-                                HStack {
-                                    Image(systemName: device.iconSymbolName)
-                                    Text(device.name)
-                                    if device.uid == row.outputDeviceUID {
-                                        Spacer()
-                                        Image(systemName: "checkmark")
+                    // A ProgressView placed inside a Menu's label gets bridged to a
+                    // static AppKit snapshot rather than staying a live animating
+                    // view, so it never visibly spun there. Swapping out the whole
+                    // Menu for a plain view while pending keeps it a real, live
+                    // SwiftUI view that actually animates.
+                    if isDeviceSwitchPending {
+                        ProgressView()
+                            .controlSize(.mini)
+                            .frame(width: 16, height: 16)
+                            .help("Switching output device\u{2026}")
+                    } else {
+                        Menu {
+                            ForEach(devices) { device in
+                                Button {
+                                    onDeviceChange(device)
+                                } label: {
+                                    HStack {
+                                        Image(systemName: device.iconSymbolName)
+                                        Text(device.name)
+                                        if device.uid == row.outputDeviceUID {
+                                            Spacer()
+                                            Image(systemName: "checkmark")
+                                        }
                                     }
                                 }
                             }
+                        } label: {
+                            Image(systemName: selectedDeviceIcon)
+                                .font(.system(size: 10))
                         }
-                    } label: {
-                        Image(systemName: selectedDeviceIcon)
-                            .font(.system(size: 10))
+                        .menuStyle(.borderlessButton)
+                        .fixedSize()
+                        .help("Output: \(selectedDeviceName)")
                     }
-                    .menuStyle(.borderlessButton)
-                    .fixedSize()
-                    .help("Output: \(selectedDeviceName)")
                 }
             }
         }
