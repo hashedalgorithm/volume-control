@@ -17,6 +17,7 @@ private final class AnchoredPanel: NSPanel {
 final class PopoverController: NSObject {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     private let model = AudioMixerModel()
+    private let inputModel = InputMixEngine()
     private let hostingController: NSHostingController<MixerPanelView>
     private let panel: AnchoredPanel
     private var outsideClickMonitor: Any?
@@ -24,7 +25,7 @@ final class PopoverController: NSObject {
     private var frameObserver: NSObjectProtocol?
 
     override init() {
-        let rootView = MixerPanelView(model: model, onQuit: {}, onClose: {})
+        let rootView = MixerPanelView(model: model, inputModel: inputModel, onQuit: {}, onClose: {})
         hostingController = NSHostingController(rootView: rootView)
         panel = AnchoredPanel(
             contentRect: .zero,
@@ -36,6 +37,7 @@ final class PopoverController: NSObject {
 
         hostingController.rootView = MixerPanelView(
             model: model,
+            inputModel: inputModel,
             onQuit: { [weak self] in self?.quit() },
             onClose: { [weak self] in self?.close() }
         )

@@ -72,6 +72,40 @@ enum AudioDeviceManager {
         }
     }
 
+    /// Finds a device by UID with no virtual/output filtering -- needed to locate
+    /// VolumeControl's own "Volume Control Mic Mix" virtual device (UID
+    /// "com.volumecontrol.micmix"), which outputDevices() deliberately excludes since
+    /// it's virtual and isn't a real destination for per-app output routing.
+    static func deviceID(forUID uid: String) -> AudioObjectID? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var dataSize: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &dataSize) == noErr else {
+            return nil
+        }
+        let count = Int(dataSize) / MemoryLayout<AudioObjectID>.size
+        var ids = [AudioObjectID](repeating: 0, count: count)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &dataSize, &ids) == noErr else {
+            return nil
+        }
+        return ids.first { stringProperty($0, selector: kAudioDevicePropertyDeviceUID) == uid }
+    }
+
+    static func defaultInputDeviceID() -> AudioObjectID? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var deviceID = AudioObjectID(0)
+        var size = UInt32(MemoryLayout<AudioObjectID>.size)
+        let status = AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &deviceID)
+        return status == noErr ? deviceID : nil
+    }
+
     static func defaultOutputDeviceID() -> AudioObjectID? {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDefaultOutputDevice,

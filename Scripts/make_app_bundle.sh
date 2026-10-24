@@ -41,6 +41,8 @@ cat > "$APP/Contents/Info.plist" <<'EOF'
     <true/>
     <key>NSAudioCaptureUsageDescription</key>
     <string>Volume Control captures per-app audio to route and mix it (e.g. into a call microphone).</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Volume Control reads your microphone to mix it with selected apps' audio into a virtual call microphone.</string>
 </dict>
 </plist>
 EOF

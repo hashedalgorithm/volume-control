@@ -3,7 +3,7 @@ import SwiftUI
 /// Mirrors macOS's own volume icon convention: muted gets a distinct slashed icon,
 /// and unmuted reflects how loud the level actually is (silent/quiet/medium/loud)
 /// rather than a flat two-state toggle.
-private func speakerIconName(isMuted: Bool, volume: Float) -> String {
+func speakerIconName(isMuted: Bool, volume: Float) -> String {
     if isMuted { return "speaker.slash.fill" }
     switch volume {
     case ..<0.001: return "speaker.fill"
@@ -13,17 +13,19 @@ private func speakerIconName(isMuted: Bool, volume: Float) -> String {
     }
 }
 
+private enum MixerTab: String, CaseIterable {
+    case output = "Output"
+    case input = "Input"
+}
+
 @available(macOS 14.2, *)
 struct MixerPanelView: View {
     @ObservedObject var model: AudioMixerModel
+    @ObservedObject var inputModel: InputMixEngine
     var onQuit: () -> Void
     var onClose: () -> Void
 
-    /// Beyond this many app rows, the list scrolls with a fixed, screen-safe height
-    /// instead of growing the popover further -- a forced `minHeight` here previously
-    /// pushed the whole popover tall enough that AppKit repositioned it off the top of
-    /// the screen with no way to reach the controls to close it.
-    private static let maxRowsBeforeScroll = 3
+    @State private var selectedTab: MixerTab = .output
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -44,8 +46,54 @@ struct MixerPanelView: View {
             .padding([.top, .horizontal], 14)
             .padding(.bottom, 10)
 
+            Picker("", selection: $selectedTab) {
+                ForEach(MixerTab.allCases, id: \.self) { tab in
+                    Text(tab.rawValue).tag(tab)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.horizontal, 14)
+            .padding(.bottom, 10)
+
             Divider()
 
+            switch selectedTab {
+            case .output:
+                OutputTabView(model: model)
+            case .input:
+                InputTabView(model: inputModel)
+            }
+
+            Divider()
+
+            Button("Quit Volume Control", action: onQuit)
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .font(.callout)
+                .padding(12)
+        }
+        .frame(width: 340)
+        // NSPopover used to supply this chrome automatically; a plain NSWindow-hosted
+        // panel (needed for full control over positioning -- see PopoverController)
+        // needs it drawn explicitly.
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+}
+
+@available(macOS 14.2, *)
+private struct OutputTabView: View {
+    @ObservedObject var model: AudioMixerModel
+
+    /// Beyond this many app rows, the list scrolls with a fixed, screen-safe height
+    /// instead of growing the popover further -- a forced `minHeight` here previously
+    /// pushed the whole popover tall enough that AppKit repositioned it off the top of
+    /// the screen with no way to reach the controls to close it.
+    private static let maxRowsBeforeScroll = 3
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 8) {
                 Text("SYSTEM")
                     .font(.system(size: 11, weight: .bold))
@@ -114,21 +162,7 @@ struct MixerPanelView: View {
                     .frame(height: 260) // fixed, screen-safe; longer lists scroll within this
                 }
             }
-
-            Divider()
-
-            Button("Quit Volume Control", action: onQuit)
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-                .font(.callout)
-                .padding(12)
         }
-        .frame(width: 340)
-        // NSPopover used to supply this chrome automatically; a plain NSWindow-hosted
-        // panel (needed for full control over positioning -- see PopoverController)
-        // needs it drawn explicitly.
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 }
 
