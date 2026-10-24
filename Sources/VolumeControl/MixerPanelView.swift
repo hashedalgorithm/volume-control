@@ -111,6 +111,11 @@ struct MixerPanelView: View {
                 .padding(12)
         }
         .frame(width: 340)
+        // NSPopover used to supply this chrome automatically; a plain NSWindow-hosted
+        // panel (needed for full control over positioning -- see PopoverController)
+        // needs it drawn explicitly.
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 }
 
