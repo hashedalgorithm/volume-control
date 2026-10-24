@@ -6,7 +6,12 @@ struct AppRow: Identifiable, Equatable {
     let id: pid_t
     let bundleID: String
     let name: String
-    let icon: NSImage
+    /// Real app icon, used for normal per-app rows.
+    let icon: NSImage?
+    /// SF Symbol name, used instead of `icon` for pinned system rows (e.g. "System
+    /// Sounds") so they render smaller and in the same secondary gray as other pinned
+    /// controls rather than looking like a full-size, full-color app icon.
+    let leadingSystemSymbolName: String?
     var volume: Float
     var isMuted: Bool
     var outputDeviceUID: String?
@@ -42,8 +47,6 @@ final class AudioMixerModel: ObservableObject {
     private var systemSoundsPID: pid_t?
     private var refreshTimer: Timer?
     private static let genericAppIcon = NSWorkspace.shared.icon(for: .application)
-    private static let systemSoundsIcon = NSImage(systemSymbolName: "bell.fill", accessibilityDescription: "System Sounds")
-        ?? genericAppIcon
 
     /// `kAudioProcessPropertyIsRunningOutput` flickers false for a single poll between
     /// tracks, during buffering, etc. Tearing down the tap+aggregate+engine on every
@@ -102,6 +105,7 @@ final class AudioMixerModel: ObservableObject {
                 bundleID: bundleID,
                 name: running?.localizedName ?? bundleID,
                 icon: running?.icon ?? Self.genericAppIcon,
+                leadingSystemSymbolName: nil,
                 volume: volumes[pid] ?? 1.0,
                 isMuted: muted.contains(pid),
                 outputDeviceUID: outputDeviceUIDs[pid] ?? AudioDeviceManager.defaultOutputDeviceUID()
@@ -132,7 +136,8 @@ final class AudioMixerModel: ObservableObject {
             id: process.pid,
             bundleID: process.bundleID,
             name: "System Sounds",
-            icon: Self.systemSoundsIcon,
+            icon: nil,
+            leadingSystemSymbolName: "bell.fill",
             volume: volumes[process.pid] ?? 1.0,
             isMuted: muted.contains(process.pid),
             outputDeviceUID: outputDeviceUIDs[process.pid] ?? AudioDeviceManager.defaultOutputDeviceUID()

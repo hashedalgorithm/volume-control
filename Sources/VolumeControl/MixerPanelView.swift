@@ -141,8 +141,10 @@ private struct MasterVolumeRowView: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "speaker.wave.3.fill")
-                .font(.system(size: 17))
+            // Distinct from the mute button's speaker glyph below -- a mixer/fader
+            // icon reads as "master control" rather than duplicating a speaker icon.
+            Image(systemName: "slider.horizontal.3")
+                .font(.system(size: 15))
                 .foregroundStyle(.secondary)
                 .frame(width: 26, height: 26)
                 .opacity(isMuted ? 0.5 : 1.0)
@@ -199,12 +201,23 @@ private struct AppRowView: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            Image(nsImage: row.icon)
-                .resizable()
-                .frame(width: 26, height: 26)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-                .opacity(row.isMuted ? 0.5 : 1.0)
-                .padding(.top, 2)
+            Group {
+                if let symbolName = row.leadingSystemSymbolName {
+                    // Pinned system row (e.g. "System Sounds"): smaller, same
+                    // secondary gray as Master Volume's icon, not a full-size
+                    // full-color app icon.
+                    Image(systemName: symbolName)
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                } else if let icon = row.icon {
+                    Image(nsImage: icon)
+                        .resizable()
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                }
+            }
+            .frame(width: 26, height: 26)
+            .opacity(row.isMuted ? 0.5 : 1.0)
+            .padding(.top, 2)
 
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
