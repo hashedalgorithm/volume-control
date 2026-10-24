@@ -82,34 +82,29 @@ struct MixerPanelView: View {
     }
 }
 
-private struct SectionContentHeightKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
-}
-
 /// Shared collapsible-section chrome used by System, Device Levels, and Applications
 /// so all three expand/collapse the same way: the whole header row (title, chevron) is
 /// tappable -- not just the chevron, which is what SwiftUI's built-in DisclosureGroup
 /// restricts the hit area to on macOS -- and identical padding whether expanded or
 /// collapsed so there's no dead/uneven gap before the next Divider.
 ///
-/// Content stays in the view tree at all times and is revealed by animating a measured
-/// height constraint + clipping, rather than conditionally inserting/removing it with a
-/// move/fade transition. The move+fade version looked like content sliding and popping
-/// in and out rather than a smooth reveal -- native macOS disclosure animations (Mail's
-/// thread expansion, System Settings sections) are a pure height/clip grow, no fade.
+/// A GeometryReader-measured .frame(height:) approach was tried here to get a pure
+/// height/clip reveal like native macOS disclosure (no fade) but the measured height
+/// never reliably fed back through the frame constraint -- content stayed collapsed
+/// regardless of state. Reverted to conditional insertion with an opacity-only
+/// transition (no .move, which was the actual source of the original "sliding and
+/// popping" complaint) under withAnimation, which lets SwiftUI animate the surrounding
+/// layout reflow smoothly together with the fade.
 @available(macOS 14.2, *)
 private struct CollapsibleSection<Content: View>: View {
     let title: String
     @Binding var isExpanded: Bool
     @ViewBuilder let content: () -> Content
 
-    @State private var measuredHeight: CGFloat = 0
-
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
-                withAnimation(.easeInOut(duration: 0.28)) { isExpanded.toggle() }
+                withAnimation(.easeInOut(duration: 0.25)) { isExpanded.toggle() }
             } label: {
                 HStack(spacing: 6) {
                     Text(title)
@@ -127,18 +122,12 @@ private struct CollapsibleSection<Content: View>: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
 
-            content()
-                .padding(.bottom, 10)
-                .fixedSize(horizontal: false, vertical: true)
-                .background(
-                    GeometryReader { proxy in
-                        Color.clear.preference(key: SectionContentHeightKey.self, value: proxy.size.height)
-                    }
-                )
-                .frame(height: isExpanded ? measuredHeight : 0, alignment: .top)
-                .clipped()
+            if isExpanded {
+                content()
+                    .padding(.bottom, 10)
+                    .transition(.opacity)
+            }
         }
-        .onPreferenceChange(SectionContentHeightKey.self) { measuredHeight = $0 }
     }
 }
 
