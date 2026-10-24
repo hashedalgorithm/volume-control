@@ -24,7 +24,7 @@ final class PopoverController: NSObject {
     private var frameObserver: NSObjectProtocol?
 
     override init() {
-        let rootView = MixerPanelView(model: model, onQuit: {})
+        let rootView = MixerPanelView(model: model, onQuit: {}, onClose: {})
         hostingController = NSHostingController(rootView: rootView)
         panel = AnchoredPanel(
             contentRect: .zero,
@@ -34,7 +34,11 @@ final class PopoverController: NSObject {
         )
         super.init()
 
-        hostingController.rootView = MixerPanelView(model: model, onQuit: { [weak self] in self?.quit() })
+        hostingController.rootView = MixerPanelView(
+            model: model,
+            onQuit: { [weak self] in self?.quit() },
+            onClose: { [weak self] in self?.close() }
+        )
 
         panel.contentViewController = hostingController
         panel.isOpaque = false

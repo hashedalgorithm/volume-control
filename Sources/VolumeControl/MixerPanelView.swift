@@ -17,6 +17,7 @@ private func speakerIconName(isMuted: Bool, volume: Float) -> String {
 struct MixerPanelView: View {
     @ObservedObject var model: AudioMixerModel
     var onQuit: () -> Void
+    var onClose: () -> Void
 
     /// Beyond this many app rows, the list scrolls with a fixed, screen-safe height
     /// instead of growing the popover further -- a forced `minHeight` here previously
@@ -26,10 +27,22 @@ struct MixerPanelView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("Volume Control")
-                .font(.system(size: 15, weight: .bold))
-                .padding([.top, .horizontal], 14)
-                .padding(.bottom, 10)
+            HStack {
+                Text("Volume Control")
+                    .font(.system(size: 15, weight: .bold))
+
+                Spacer()
+
+                Button(action: onClose) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 15))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Close")
+            }
+            .padding([.top, .horizontal], 14)
+            .padding(.bottom, 10)
 
             Divider()
 
@@ -180,6 +193,10 @@ private struct AppRowView: View {
         devices.first(where: { $0.uid == row.outputDeviceUID })?.name ?? "Default"
     }
 
+    private var selectedDeviceIcon: String {
+        devices.first(where: { $0.uid == row.outputDeviceUID })?.iconSymbolName ?? "hifispeaker.fill"
+    }
+
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             Image(nsImage: row.icon)
@@ -222,15 +239,18 @@ private struct AppRowView: View {
                             Button {
                                 onDeviceChange(device)
                             } label: {
-                                if device.uid == row.outputDeviceUID {
-                                    Label(device.name, systemImage: "checkmark")
-                                } else {
+                                HStack {
+                                    Image(systemName: device.iconSymbolName)
                                     Text(device.name)
+                                    if device.uid == row.outputDeviceUID {
+                                        Spacer()
+                                        Image(systemName: "checkmark")
+                                    }
                                 }
                             }
                         }
                     } label: {
-                        Image(systemName: "hifispeaker.fill")
+                        Image(systemName: selectedDeviceIcon)
                             .font(.system(size: 10))
                     }
                     .menuStyle(.borderlessButton)

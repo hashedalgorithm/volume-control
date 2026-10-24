@@ -10,6 +10,33 @@ struct AudioDevice: Identifiable, Equatable, Hashable {
     let id: AudioObjectID
     let uid: String
     let name: String
+    let transportType: UInt32
+
+    /// Best-guess device category icon from name keywords (most specific/reliable
+    /// signal CoreAudio gives us for things like "wireless earbuds" vs "soundbar")
+    /// falling back to transport type. CoreAudio doesn't expose a formal device
+    /// category for output devices -- this is the same practical limit any
+    /// third-party volume mixer runs into.
+    var iconSymbolName: String {
+        let lower = name.lowercased()
+
+        if lower.contains("airpods max") { return "airpodsmax" }
+        if lower.contains("airpods") { return "airpods" }
+        if lower.contains("beats") { return "beats.headphones" }
+        if lower.contains("soundbar") || lower.contains("home theater") || lower.contains("hometheater")
+            || lower.contains("theater") || lower.contains("arc") {
+            return "tv.and.hifispeaker.fill"
+        }
+        if lower.contains("earbud") || lower.contains("buds") { return "earbuds" }
+        if lower.contains("headphone") || lower.contains("headset") { return "headphones" }
+
+        switch transportType {
+        case kAudioDeviceTransportTypeBuiltIn: return "laptopcomputer"
+        case kAudioDeviceTransportTypeAirPlay: return "airplayaudio"
+        case kAudioDeviceTransportTypeHDMI, kAudioDeviceTransportTypeDisplayPort: return "tv.and.hifispeaker.fill"
+        default: return "hifispeaker.fill"
+        }
+    }
 }
 
 enum AudioDeviceManager {
@@ -34,10 +61,14 @@ enum AudioDeviceManager {
         }
 
         return ids.compactMap { deviceID in
-            guard hasOutputStreams(deviceID), !isVirtual(deviceID) else { return nil }
+            guard hasOutputStreams(deviceID) else { return nil }
+            let transportType = transportTypeProperty(deviceID)
+            guard transportType != kAudioDeviceTransportTypeVirtual, transportType != kAudioDeviceTransportTypeAggregate else {
+                return nil
+            }
             guard let uid = stringProperty(deviceID, selector: kAudioDevicePropertyDeviceUID),
                   let name = stringProperty(deviceID, selector: kAudioObjectPropertyName) else { return nil }
-            return AudioDevice(id: deviceID, uid: uid, name: name)
+            return AudioDevice(id: deviceID, uid: uid, name: name, transportType: transportType)
         }
     }
 
@@ -111,12 +142,12 @@ enum AudioDeviceManager {
         _ = AudioObjectSetPropertyData(deviceID, &address, 0, nil, UInt32(MemoryLayout<UInt32>.size), &value)
     }
 
-    /// Excludes virtual/aggregate devices (e.g. "Microsoft Teams Audio", Zoom's or our
-    /// own private tap devices) -- these exist for apps' own internal routing, aren't
-    /// real speakers, and picking one as a destination just sends audio nowhere
-    /// audible. Real devices (built-in, USB, Bluetooth, HDMI, AirPlay, Thunderbolt...)
-    /// all pass through.
-    private static func isVirtual(_ deviceID: AudioObjectID) -> Bool {
+    /// Also used to exclude virtual/aggregate devices (e.g. "Microsoft Teams Audio",
+    /// Zoom's or our own private tap devices) -- these exist for apps' own internal
+    /// routing, aren't real speakers, and picking one as a destination just sends audio
+    /// nowhere audible. Real devices (built-in, USB, Bluetooth, HDMI, AirPlay,
+    /// Thunderbolt...) all pass through.
+    private static func transportTypeProperty(_ deviceID: AudioObjectID) -> UInt32 {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyTransportType,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -124,9 +155,8 @@ enum AudioDeviceManager {
         )
         var transportType: UInt32 = 0
         var size = UInt32(MemoryLayout<UInt32>.size)
-        let status = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &transportType)
-        guard status == noErr else { return false }
-        return transportType == kAudioDeviceTransportTypeVirtual || transportType == kAudioDeviceTransportTypeAggregate
+        _ = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &transportType)
+        return transportType
     }
 
     private static func hasOutputStreams(_ deviceID: AudioObjectID) -> Bool {
