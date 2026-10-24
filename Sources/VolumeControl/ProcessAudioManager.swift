@@ -86,9 +86,9 @@ enum AudioProcessManager {
 }
 
 /// Captures one app's audio via a private `CATapDescription` process tap, mutes the
-/// app's direct hardware output, and re-renders the captured samples back through the
-/// system's current default output at a user-controlled volume -- i.e. a per-app volume
-/// knob, with no change to where the audio plays.
+/// app's direct hardware output, and re-renders the captured samples at a user-
+/// controlled volume through a user-chosen output device (the system default if none
+/// is chosen) -- a per-app volume knob plus per-app output routing.
 ///
 /// This mirrors the public per-process tap mechanism Apple ships in CoreAudio
 /// (`AudioHardwareCreateProcessTap`, macOS 14.2+) rather than any vendor-specific
@@ -102,6 +102,7 @@ final class ProcessAudioRoute {
     private var aggregateDeviceID: AudioObjectID = 0
     private var ioProcID: AudioDeviceIOProcID?
     private let engine = AVAudioEngine()
+    private var sourceNode: AVAudioSourceNode?
     private let ringBuffer = AudioRingBuffer(capacityFrames: 1 << 16)
     private var captureFormat = AudioStreamBasicDescription()
 
@@ -113,7 +114,7 @@ final class ProcessAudioRoute {
         self.process = process
     }
 
-    func start() throws {
+    func start(outputDeviceUID: String? = nil) throws {
         let description = CATapDescription(stereoMixdownOfProcesses: [process.id])
         description.name = "VolumeControl-tap-\(process.pid)"
         description.isPrivate = true
@@ -141,8 +142,15 @@ final class ProcessAudioRoute {
         aggregateDeviceID = newAggregateID
         captureFormat = try queryCaptureFormat()
 
-        try startEngine()
+        try startEngine(outputDeviceUID: outputDeviceUID)
         try startIOProc()
+    }
+
+    /// Switches which physical output device the re-rendered audio plays through,
+    /// without touching the capture side (tap keeps running, no audio gap on the
+    /// source app's side -- only this route's own playback engine restarts briefly).
+    func setOutputDevice(uid: String?) throws {
+        try startEngine(outputDeviceUID: uid)
     }
 
     func stop() {
@@ -204,22 +212,44 @@ final class ProcessAudioRoute {
         return format
     }
 
-    // MARK: - Playback side (AVAudioEngine -> system default output)
+    // MARK: - Playback side (AVAudioEngine -> chosen output device, default system output if nil)
 
-    private func startEngine() throws {
+    private func startEngine(outputDeviceUID: String?) throws {
+        engine.stop()
+        if let oldNode = sourceNode {
+            engine.detach(oldNode)
+            sourceNode = nil
+        }
+
+        if let outputDeviceUID {
+            guard let device = AudioDeviceManager.outputDevices().first(where: { $0.uid == outputDeviceUID }) else {
+                throw CoreAudioError.osStatus(kAudio_ParamError, "unknown output device uid")
+            }
+            guard let outputAudioUnit = engine.outputNode.audioUnit else {
+                throw CoreAudioError.osStatus(kAudio_ParamError, "engine has no output audio unit")
+            }
+            var deviceID = device.id
+            try AudioDeviceManager.check(
+                AudioUnitSetProperty(outputAudioUnit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0,
+                                      &deviceID, UInt32(MemoryLayout<AudioDeviceID>.size)),
+                "bind engine output to device"
+            )
+        }
+
         guard let sourceFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: captureFormat.mSampleRate,
                                                 channels: AVAudioChannelCount(captureFormat.mChannelsPerFrame),
                                                 interleaved: false) else {
             throw CoreAudioError.osStatus(kAudio_ParamError, "could not build source format")
         }
 
-        let sourceNode = AVAudioSourceNode(format: sourceFormat) { [ringBuffer] _, _, frameCount, audioBufferList -> OSStatus in
+        let newSourceNode = AVAudioSourceNode(format: sourceFormat) { [ringBuffer] _, _, frameCount, audioBufferList -> OSStatus in
             ringBuffer.read(frameCount: Int(frameCount), into: audioBufferList)
             return noErr
         }
-        engine.attach(sourceNode)
-        engine.connect(sourceNode, to: engine.mainMixerNode, format: sourceFormat)
+        engine.attach(newSourceNode)
+        engine.connect(newSourceNode, to: engine.mainMixerNode, format: sourceFormat)
         engine.mainMixerNode.outputVolume = volume
+        sourceNode = newSourceNode
         try engine.start()
     }
 

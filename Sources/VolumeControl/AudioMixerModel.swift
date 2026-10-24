@@ -8,9 +8,12 @@ struct AppRow: Identifiable, Equatable {
     let name: String
     let icon: NSImage
     var volume: Float
+    var isMuted: Bool
+    var outputDeviceUID: String?
 
     static func == (lhs: AppRow, rhs: AppRow) -> Bool {
-        lhs.id == rhs.id && lhs.volume == rhs.volume
+        lhs.id == rhs.id && lhs.volume == rhs.volume && lhs.isMuted == rhs.isMuted
+            && lhs.outputDeviceUID == rhs.outputDeviceUID
     }
 }
 
@@ -20,9 +23,12 @@ struct AppRow: Identifiable, Equatable {
 @available(macOS 14.2, *)
 final class AudioMixerModel: ObservableObject {
     @Published private(set) var apps: [AppRow] = []
+    @Published private(set) var devices: [AudioDevice] = []
 
     private var activeRoutes: [pid_t: ProcessAudioRoute] = [:]
     private var volumes: [pid_t: Float] = [:]
+    private var muted: Set<pid_t> = []
+    private var outputDeviceUIDs: [pid_t: String] = [:]
     private var missingStreak: [pid_t: Int] = [:]
     private var refreshTimer: Timer?
     private static let genericAppIcon = NSWorkspace.shared.icon(for: .application)
@@ -41,6 +47,8 @@ final class AudioMixerModel: ObservableObject {
     }
 
     func refresh() {
+        devices = AudioDeviceManager.outputDevices()
+
         let processes = AudioProcessManager.runningAudioProcesses()
         let currentPIDs = Set(processes.map(\.pid))
 
@@ -49,8 +57,8 @@ final class AudioMixerModel: ObservableObject {
             guard activeRoutes[process.pid] == nil else { continue }
             let route = ProcessAudioRoute(process: process)
             do {
-                try route.start()
-                route.volume = volumes[process.pid] ?? 1.0
+                try route.start(outputDeviceUID: outputDeviceUIDs[process.pid])
+                route.volume = appliedVolume(for: process.pid)
                 activeRoutes[process.pid] = route
             } catch {
                 NSLog("VolumeControl: failed to start capture for \(process.bundleID): \(error)")
@@ -81,16 +89,47 @@ final class AudioMixerModel: ObservableObject {
                 bundleID: bundleID,
                 name: running?.localizedName ?? bundleID,
                 icon: running?.icon ?? Self.genericAppIcon,
-                volume: volumes[pid] ?? 1.0
+                volume: volumes[pid] ?? 1.0,
+                isMuted: muted.contains(pid),
+                outputDeviceUID: outputDeviceUIDs[pid] ?? AudioDeviceManager.defaultOutputDeviceUID()
             )
         }.sorted { $0.name < $1.name }
     }
 
+    private func appliedVolume(for pid: pid_t) -> Float {
+        muted.contains(pid) ? 0 : (volumes[pid] ?? 1.0)
+    }
+
     func setVolume(_ volume: Float, for row: AppRow) {
         volumes[row.id] = volume
-        activeRoutes[row.id]?.volume = volume
+        activeRoutes[row.id]?.volume = appliedVolume(for: row.id)
         if let index = apps.firstIndex(where: { $0.id == row.id }) {
             apps[index].volume = volume
+        }
+    }
+
+    func toggleMute(for row: AppRow) {
+        if muted.contains(row.id) {
+            muted.remove(row.id)
+        } else {
+            muted.insert(row.id)
+        }
+        activeRoutes[row.id]?.volume = appliedVolume(for: row.id)
+        if let index = apps.firstIndex(where: { $0.id == row.id }) {
+            apps[index].isMuted = muted.contains(row.id)
+        }
+    }
+
+    func setOutputDevice(_ device: AudioDevice, for row: AppRow) {
+        outputDeviceUIDs[row.id] = device.uid
+        if let index = apps.firstIndex(where: { $0.id == row.id }) {
+            apps[index].outputDeviceUID = device.uid
+        }
+        guard let route = activeRoutes[row.id] else { return }
+        do {
+            try route.setOutputDevice(uid: device.uid)
+        } catch {
+            NSLog("VolumeControl: failed to switch output device for pid \(row.id): \(error)")
         }
     }
 
