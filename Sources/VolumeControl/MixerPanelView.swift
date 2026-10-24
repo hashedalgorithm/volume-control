@@ -5,6 +5,11 @@ struct MixerPanelView: View {
     @ObservedObject var model: AudioMixerModel
     var onQuit: () -> Void
 
+    /// Approximate rendered height of one `AppRowView` (icon row + name/mute/% line +
+    /// slider/device line + vertical padding). Used to reserve enough list height for
+    /// a minimum row count without scrolling.
+    fileprivate static let appRowHeight: CGFloat = 54
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Text("Volume Control")
@@ -66,7 +71,12 @@ struct MixerPanelView: View {
                         }
                         .padding(.bottom, 8)
                     }
-                    .frame(maxHeight: 340)
+                    // Reserve room for at least 3 rows even when fewer apps are
+                    // playing, so the list doesn't scroll until there are more than
+                    // that; caps out so a long app list still scrolls instead of
+                    // growing the popover unbounded.
+                    .frame(minHeight: min(CGFloat(model.apps.count), 3) * Self.appRowHeight,
+                           maxHeight: 6 * Self.appRowHeight)
                 }
             }
 
