@@ -14,9 +14,41 @@ struct AudioProcess: Identifiable, Equatable {
     }
 }
 
+/// `systemsoundserverd`'s bundle identifier, as queried via
+/// `kAudioProcessPropertyBundleID` -- it's the daemon behind alert/notification/UI
+/// sounds. It spins up output only for the instant it plays a sound, which is why it
+/// used to flicker in and out of the per-app list; it's tracked separately instead and
+/// pinned as an always-present "System Sounds" row.
+private let systemSoundsBundleID = "systemsoundserverd"
+
 enum AudioProcessManager {
 
     static func runningAudioProcesses() -> [AudioProcess] {
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        return allProcessObjects().compactMap { processID -> AudioProcess? in
+            guard isRunningOutput(processID), let pid = pidProperty(processID), let bundleID = bundleIDProperty(processID) else {
+                return nil
+            }
+            // VolumeControl's own playback (re-rendering captured app audio) makes it
+            // show up here too; it's the master output path, not "another app" to track.
+            guard pid != ownPID, bundleID != systemSoundsBundleID else { return nil }
+            return AudioProcess(id: processID, pid: pid, bundleID: bundleID)
+        }
+    }
+
+    /// Unlike `runningAudioProcesses()`, this doesn't require the process to be
+    /// outputting audio *right now* -- the system sounds row needs to stay pinned and
+    /// controllable even between alert sounds.
+    static func systemSoundsProcess() -> AudioProcess? {
+        for processID in allProcessObjects() {
+            guard let pid = pidProperty(processID), let bundleID = bundleIDProperty(processID),
+                  bundleID == systemSoundsBundleID else { continue }
+            return AudioProcess(id: processID, pid: pid, bundleID: bundleID)
+        }
+        return nil
+    }
+
+    private static func allProcessObjects() -> [AudioObjectID] {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyProcessObjectList,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -31,18 +63,7 @@ enum AudioProcessManager {
         guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &dataSize, &ids) == noErr else {
             return []
         }
-
-        let ownPID = ProcessInfo.processInfo.processIdentifier
-
-        return ids.compactMap { processID -> AudioProcess? in
-            guard isRunningOutput(processID), let pid = pidProperty(processID), let bundleID = bundleIDProperty(processID) else {
-                return nil
-            }
-            // VolumeControl's own playback (re-rendering captured app audio) makes it
-            // show up here too; it's the master output path, not "another app" to track.
-            guard pid != ownPID else { return nil }
-            return AudioProcess(id: processID, pid: pid, bundleID: bundleID)
-        }
+        return ids
     }
 
     private static func isRunningOutput(_ processID: AudioObjectID) -> Bool {

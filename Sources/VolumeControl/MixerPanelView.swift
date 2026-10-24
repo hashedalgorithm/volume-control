@@ -14,6 +14,23 @@ struct MixerPanelView: View {
 
             Divider()
 
+            if let systemRow = model.systemSoundsRow {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("SYSTEM")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 14)
+                        .padding(.top, 10)
+
+                    AppRowView(row: systemRow, devices: model.devices,
+                               onVolumeChange: { model.setVolume($0, for: systemRow) },
+                               onToggleMute: { model.toggleMute(for: systemRow) },
+                               onDeviceChange: { model.setOutputDevice($0, for: systemRow) })
+                }
+
+                Divider()
+            }
+
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     Text("APPLICATIONS")
