@@ -83,15 +83,14 @@ struct MixerPanelView: View {
 }
 
 /// Shared collapsible-section chrome used by System, Device Levels, and Applications
-/// so all three expand/collapse the same way: the whole header row (title, optional
-/// trailing label, chevron) is tappable -- not just the chevron, which is what SwiftUI's
-/// built-in DisclosureGroup restricts the hit area to on macOS -- with a smooth
-/// rotation + fade/slide instead of an abrupt cut, and identical padding whether
-/// expanded or collapsed so there's no dead/uneven gap before the next Divider.
+/// so all three expand/collapse the same way: the whole header row (title, chevron) is
+/// tappable -- not just the chevron, which is what SwiftUI's built-in DisclosureGroup
+/// restricts the hit area to on macOS -- with a smooth rotation + fade/slide instead of
+/// an abrupt cut, and identical padding whether expanded or collapsed so there's no
+/// dead/uneven gap before the next Divider.
 @available(macOS 14.2, *)
 private struct CollapsibleSection<Content: View>: View {
     let title: String
-    var trailingLabel: String?
     @Binding var isExpanded: Bool
     @ViewBuilder let content: () -> Content
 
@@ -105,11 +104,6 @@ private struct CollapsibleSection<Content: View>: View {
                         .font(.system(size: 11, weight: .bold))
                         .foregroundStyle(.secondary)
                     Spacer()
-                    if let trailingLabel {
-                        Text(trailingLabel)
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundStyle(.secondary)
-                    }
                     Image(systemName: "chevron.right")
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(.secondary)
@@ -176,7 +170,7 @@ private struct OutputTabView: View {
                 Divider()
             }
 
-            CollapsibleSection(title: "APPLICATIONS", trailingLabel: "VOLUME", isExpanded: $isApplicationsExpanded) {
+            CollapsibleSection(title: "APPLICATIONS", isExpanded: $isApplicationsExpanded) {
                 if model.apps.isEmpty {
                     Text("No apps currently playing audio")
                         .foregroundStyle(.secondary)
