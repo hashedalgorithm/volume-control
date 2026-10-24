@@ -33,7 +33,7 @@ enum AudioDeviceManager {
         }
 
         return ids.compactMap { deviceID in
-            guard hasOutputStreams(deviceID) else { return nil }
+            guard hasOutputStreams(deviceID), !isVirtual(deviceID) else { return nil }
             guard let uid = stringProperty(deviceID, selector: kAudioDevicePropertyDeviceUID),
                   let name = stringProperty(deviceID, selector: kAudioObjectPropertyName) else { return nil }
             return AudioDevice(id: deviceID, uid: uid, name: name)
@@ -51,6 +51,24 @@ enum AudioDeviceManager {
         let status = AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &deviceID)
         guard status == noErr else { return nil }
         return stringProperty(deviceID, selector: kAudioDevicePropertyDeviceUID)
+    }
+
+    /// Excludes virtual/aggregate devices (e.g. "Microsoft Teams Audio", Zoom's or our
+    /// own private tap devices) -- these exist for apps' own internal routing, aren't
+    /// real speakers, and picking one as a destination just sends audio nowhere
+    /// audible. Real devices (built-in, USB, Bluetooth, HDMI, AirPlay, Thunderbolt...)
+    /// all pass through.
+    private static func isVirtual(_ deviceID: AudioObjectID) -> Bool {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyTransportType,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var transportType: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        let status = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &transportType)
+        guard status == noErr else { return false }
+        return transportType == kAudioDeviceTransportTypeVirtual || transportType == kAudioDeviceTransportTypeAggregate
     }
 
     private static func hasOutputStreams(_ deviceID: AudioObjectID) -> Bool {
