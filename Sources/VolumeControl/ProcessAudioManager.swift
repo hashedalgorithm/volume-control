@@ -32,10 +32,15 @@ enum AudioProcessManager {
             return []
         }
 
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+
         return ids.compactMap { processID -> AudioProcess? in
             guard isRunningOutput(processID), let pid = pidProperty(processID), let bundleID = bundleIDProperty(processID) else {
                 return nil
             }
+            // VolumeControl's own playback (re-rendering captured app audio) makes it
+            // show up here too; it's the master output path, not "another app" to track.
+            guard pid != ownPID else { return nil }
             return AudioProcess(id: processID, pid: pid, bundleID: bundleID)
         }
     }

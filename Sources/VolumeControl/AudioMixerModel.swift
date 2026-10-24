@@ -23,8 +23,15 @@ final class AudioMixerModel: ObservableObject {
 
     private var activeRoutes: [pid_t: ProcessAudioRoute] = [:]
     private var volumes: [pid_t: Float] = [:]
+    private var missingStreak: [pid_t: Int] = [:]
     private var refreshTimer: Timer?
     private static let genericAppIcon = NSWorkspace.shared.icon(for: .application)
+
+    /// `kAudioProcessPropertyIsRunningOutput` flickers false for a single poll between
+    /// tracks, during buffering, etc. Tearing down the tap+aggregate+engine on every
+    /// such blip is what caused the dropouts/silence -- only treat an app as gone after
+    /// it's been absent this many consecutive polls.
+    private static let missingPollsBeforeStop = 3
 
     init() {
         refresh()
@@ -37,7 +44,9 @@ final class AudioMixerModel: ObservableObject {
         let processes = AudioProcessManager.runningAudioProcesses()
         let currentPIDs = Set(processes.map(\.pid))
 
-        for process in processes where activeRoutes[process.pid] == nil {
+        for process in processes {
+            missingStreak[process.pid] = 0
+            guard activeRoutes[process.pid] == nil else { continue }
             let route = ProcessAudioRoute(process: process)
             do {
                 try route.start()
@@ -49,20 +58,32 @@ final class AudioMixerModel: ObservableObject {
         }
 
         for pid in activeRoutes.keys where !currentPIDs.contains(pid) {
-            activeRoutes[pid]?.stop()
-            activeRoutes[pid] = nil
+            let streak = (missingStreak[pid] ?? 0) + 1
+            missingStreak[pid] = streak
+            if streak >= Self.missingPollsBeforeStop {
+                activeRoutes[pid]?.stop()
+                activeRoutes[pid] = nil
+                missingStreak[pid] = nil
+            }
         }
 
-        apps = processes.map { process in
-            let running = NSRunningApplication(processIdentifier: process.pid)
+        // Keep showing rows for apps still within their grace period so the slider
+        // doesn't flicker out and back during a momentary isRunningOutput blip.
+        let stillGraced = Set(activeRoutes.keys).subtracting(currentPIDs)
+        let displayedPIDs = currentPIDs.union(stillGraced)
+
+        apps = displayedPIDs.compactMap { pid -> AppRow? in
+            let process = processes.first(where: { $0.pid == pid })
+            let running = NSRunningApplication(processIdentifier: pid)
+            guard let bundleID = process?.bundleID ?? running?.bundleIdentifier else { return nil }
             return AppRow(
-                id: process.pid,
-                bundleID: process.bundleID,
-                name: running?.localizedName ?? process.bundleID,
+                id: pid,
+                bundleID: bundleID,
+                name: running?.localizedName ?? bundleID,
                 icon: running?.icon ?? Self.genericAppIcon,
-                volume: volumes[process.pid] ?? 1.0
+                volume: volumes[pid] ?? 1.0
             )
-        }
+        }.sorted { $0.name < $1.name }
     }
 
     func setVolume(_ volume: Float, for row: AppRow) {
