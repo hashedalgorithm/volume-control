@@ -104,7 +104,7 @@ private struct CollapsibleSection<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
-                withAnimation(.easeInOut(duration: 0.25)) { isExpanded.toggle() }
+                withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) { isExpanded.toggle() }
             } label: {
                 HStack(spacing: 6) {
                     Text(title)
@@ -125,7 +125,10 @@ private struct CollapsibleSection<Content: View>: View {
             if isExpanded {
                 content()
                     .padding(.bottom, 10)
-                    .transition(.opacity)
+                    // Fade + a slight grow-from-top rather than a flat opacity pop --
+                    // closer to how native macOS content reveals (popovers, menus)
+                    // ease into place instead of snapping to full size immediately.
+                    .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .top)))
             }
         }
     }
