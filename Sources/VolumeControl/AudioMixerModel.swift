@@ -22,6 +22,18 @@ struct AppRow: Identifiable, Equatable {
     }
 }
 
+/// One row in the "Device Levels" section -- a connected output device's own stored
+/// CoreAudio volume/mute, independent of (and the actual root cause behind) any
+/// per-app volume: macOS remembers this separately per device, so a Bluetooth headset
+/// and the built-in speakers can genuinely be set to very different stored levels.
+struct DeviceLevelRow: Identifiable, Equatable {
+    let id: AudioObjectID
+    let name: String
+    let iconSymbolName: String
+    var volume: Float
+    var isMuted: Bool
+}
+
 /// Keeps one `ProcessAudioRoute` running per app that's currently playing audio, so
 /// each row's slider is live the moment the app shows up -- matching SoundSource's
 /// always-on per-app volume knob rather than a manual "enable routing" step.
@@ -38,6 +50,7 @@ final class AudioMixerModel: ObservableObject {
     @Published private(set) var devices: [AudioDevice] = []
     @Published private(set) var masterVolume: Float = 1.0
     @Published private(set) var isMasterMuted: Bool = false
+    @Published private(set) var deviceLevels: [DeviceLevelRow] = []
 
     private var activeRoutes: [pid_t: ProcessAudioRoute] = [:]
     private var volumes: [pid_t: Float] = [:]
@@ -78,6 +91,13 @@ final class AudioMixerModel: ObservableObject {
             masterVolume = liveVolume
         }
         isMasterMuted = AudioDeviceManager.isMasterMuted()
+        // Same read-through approach, per device: this is macOS's own stored level for
+        // each device, which other apps/the volume keys can also change.
+        deviceLevels = devices.compactMap { device in
+            guard let volume = AudioDeviceManager.volume(for: device.id) else { return nil }
+            return DeviceLevelRow(id: device.id, name: device.name, iconSymbolName: device.iconSymbolName,
+                                   volume: volume, isMuted: AudioDeviceManager.isMuted(device.id))
+        }
         refreshSystemSounds()
 
         let processes = AudioProcessManager.runningAudioProcesses()
@@ -215,6 +235,21 @@ final class AudioMixerModel: ObservableObject {
     func toggleMasterMute() {
         isMasterMuted.toggle()
         AudioDeviceManager.setMasterMuted(isMasterMuted)
+    }
+
+    func setDeviceVolume(_ volume: Float, for row: DeviceLevelRow) {
+        AudioDeviceManager.setVolume(volume, for: row.id)
+        if let index = deviceLevels.firstIndex(where: { $0.id == row.id }) {
+            deviceLevels[index].volume = volume
+        }
+    }
+
+    func toggleDeviceMute(for row: DeviceLevelRow) {
+        let newMuted = !row.isMuted
+        AudioDeviceManager.setMuted(newMuted, for: row.id)
+        if let index = deviceLevels.firstIndex(where: { $0.id == row.id }) {
+            deviceLevels[index].isMuted = newMuted
+        }
     }
 
     func shutdown() {

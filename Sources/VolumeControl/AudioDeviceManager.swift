@@ -123,13 +123,18 @@ enum AudioDeviceManager {
         return stringProperty(deviceID, selector: kAudioDevicePropertyDeviceUID)
     }
 
-    /// The real output-device volume -- the same one the volume keys and Control
-    /// Center's slider move. Uses `AudioHardwareService...` rather than plain
-    /// `AudioObjectGetPropertyData`/`kAudioDevicePropertyVolumeScalar` because the
-    /// service API averages/distributes across however many channels the device
-    /// actually has; that's what the system's own volume control uses under the hood.
-    static func masterVolume() -> Float? {
-        guard let deviceID = defaultOutputDeviceID() else { return nil }
+    /// A device's own stored volume -- the same per-device level the volume keys,
+    /// Control Center, and System Settings' Sound pane move, and the same level
+    /// macOS remembers independently for every output device (confirmed directly:
+    /// built-in speakers and a Bluetooth headset held very different stored values on
+    /// this machine, 0.49 vs 0.047, which is what made the headset sound quiet even
+    /// though nothing in this app's own playback path is device-specific). Uses
+    /// `AudioHardwareService...` rather than plain `kAudioDevicePropertyVolumeScalar`
+    /// because the service API averages/distributes across however many channels the
+    /// device actually has; that's what the system's own volume control uses under
+    /// the hood. Returns nil for a device with no settable volume (e.g. some digital
+    /// outputs).
+    static func volume(for deviceID: AudioObjectID) -> Float? {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwareServiceDeviceProperty_VirtualMainVolume,
             mScope: kAudioObjectPropertyScopeOutput,
@@ -141,8 +146,7 @@ enum AudioDeviceManager {
         return status == noErr ? volume : nil
     }
 
-    static func setMasterVolume(_ volume: Float) {
-        guard let deviceID = defaultOutputDeviceID() else { return }
+    static func setVolume(_ volume: Float, for deviceID: AudioObjectID) {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwareServiceDeviceProperty_VirtualMainVolume,
             mScope: kAudioObjectPropertyScopeOutput,
@@ -152,8 +156,7 @@ enum AudioDeviceManager {
         _ = AudioHardwareServiceSetPropertyData(deviceID, &address, 0, nil, UInt32(MemoryLayout<Float32>.size), &value)
     }
 
-    static func isMasterMuted() -> Bool {
-        guard let deviceID = defaultOutputDeviceID() else { return false }
+    static func isMuted(_ deviceID: AudioObjectID) -> Bool {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyMute,
             mScope: kAudioObjectPropertyScopeOutput,
@@ -165,8 +168,7 @@ enum AudioDeviceManager {
         return status == noErr && value != 0
     }
 
-    static func setMasterMuted(_ muted: Bool) {
-        guard let deviceID = defaultOutputDeviceID() else { return }
+    static func setMuted(_ muted: Bool, for deviceID: AudioObjectID) {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyMute,
             mScope: kAudioObjectPropertyScopeOutput,
@@ -174,6 +176,25 @@ enum AudioDeviceManager {
         )
         var value: UInt32 = muted ? 1 : 0
         _ = AudioObjectSetPropertyData(deviceID, &address, 0, nil, UInt32(MemoryLayout<UInt32>.size), &value)
+    }
+
+    static func masterVolume() -> Float? {
+        defaultOutputDeviceID().flatMap(volume(for:))
+    }
+
+    static func setMasterVolume(_ volume: Float) {
+        guard let deviceID = defaultOutputDeviceID() else { return }
+        setVolume(volume, for: deviceID)
+    }
+
+    static func isMasterMuted() -> Bool {
+        guard let deviceID = defaultOutputDeviceID() else { return false }
+        return isMuted(deviceID)
+    }
+
+    static func setMasterMuted(_ muted: Bool) {
+        guard let deviceID = defaultOutputDeviceID() else { return }
+        setMuted(muted, for: deviceID)
     }
 
     /// Also used to exclude virtual/aggregate devices (e.g. "Microsoft Teams Audio",

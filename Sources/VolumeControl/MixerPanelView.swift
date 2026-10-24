@@ -85,6 +85,7 @@ struct MixerPanelView: View {
 @available(macOS 14.2, *)
 private struct OutputTabView: View {
     @ObservedObject var model: AudioMixerModel
+    @State private var isDeviceLevelsExpanded = false
 
     /// Beyond this many app rows, the list scrolls with a fixed, screen-safe height
     /// instead of growing the popover further -- a forced `minHeight` here previously
@@ -162,7 +163,77 @@ private struct OutputTabView: View {
                     .frame(height: 260) // fixed, screen-safe; longer lists scroll within this
                 }
             }
+
+            if !model.deviceLevels.isEmpty {
+                Divider()
+
+                DisclosureGroup(isExpanded: $isDeviceLevelsExpanded) {
+                    VStack(spacing: 2) {
+                        ForEach(model.deviceLevels) { row in
+                            DeviceLevelRowView(row: row,
+                                                onVolumeChange: { model.setDeviceVolume($0, for: row) },
+                                                onToggleMute: { model.toggleDeviceMute(for: row) })
+                        }
+                    }
+                    .padding(.top, 4)
+                    .padding(.bottom, 8)
+                } label: {
+                    Text("DEVICE LEVELS")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 14)
+                .padding(.top, 10)
+            }
         }
+    }
+}
+
+@available(macOS 14.2, *)
+private struct DeviceLevelRowView: View {
+    let row: DeviceLevelRow
+    let onVolumeChange: (Float) -> Void
+    let onToggleMute: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: row.iconSymbolName)
+                .font(.system(size: 13))
+                .foregroundStyle(.secondary)
+                .frame(width: 26, height: 26)
+                .opacity(row.isMuted ? 0.5 : 1.0)
+                .padding(.top, 2)
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    Text(row.name)
+                        .font(.system(size: 12, weight: .medium))
+                        .lineLimit(1)
+                        .opacity(row.isMuted ? 0.5 : 1.0)
+
+                    Spacer()
+
+                    Button(action: onToggleMute) {
+                        Image(systemName: speakerIconName(isMuted: row.isMuted, volume: row.volume))
+                            .font(.system(size: 11))
+                            .foregroundStyle(row.isMuted ? .red : .secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help(row.isMuted ? "Unmute" : "Mute")
+
+                    Text("\(Int(row.volume * 100))%")
+                        .font(.system(size: 11, weight: .regular).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 32, alignment: .trailing)
+                        .opacity(row.isMuted ? 0.5 : 1.0)
+                }
+
+                Slider(value: Binding(get: { row.volume }, set: onVolumeChange), in: 0...1)
+                    .opacity(row.isMuted ? 0.5 : 1.0)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 6)
     }
 }
 
