@@ -81,8 +81,9 @@ enum AudioProcessManager {
 }
 
 /// Captures one app's audio via a private `CATapDescription` process tap, mutes the
-/// app's direct hardware output for the duration of the capture, and re-renders the
-/// captured samples through a user-chosen output device at a user-chosen volume.
+/// app's direct hardware output, and re-renders the captured samples back through the
+/// system's current default output at a user-controlled volume -- i.e. a per-app volume
+/// knob, with no change to where the audio plays.
 ///
 /// This mirrors the public per-process tap mechanism Apple ships in CoreAudio
 /// (`AudioHardwareCreateProcessTap`, macOS 14.2+) rather than any vendor-specific
@@ -96,7 +97,6 @@ final class ProcessAudioRoute {
     private var aggregateDeviceID: AudioObjectID = 0
     private var ioProcID: AudioDeviceIOProcID?
     private let engine = AVAudioEngine()
-    private var sourceFormat: AVAudioFormat?
     private let ringBuffer = AudioRingBuffer(capacityFrames: 1 << 16)
 
     var volume: Float = 1.0 {
@@ -107,7 +107,7 @@ final class ProcessAudioRoute {
         self.process = process
     }
 
-    func start(outputDeviceUID: String) throws {
+    func start() throws {
         let description = CATapDescription(stereoMixdownOfProcesses: [process.id])
         description.name = "VolumeControl-tap-\(process.pid)"
         description.isPrivate = true
@@ -134,13 +134,8 @@ final class ProcessAudioRoute {
         )
         aggregateDeviceID = newAggregateID
 
-        try startEngine(outputDeviceUID: outputDeviceUID)
+        try startEngine()
         try startIOProc()
-    }
-
-    func updateOutputDevice(outputDeviceUID: String) throws {
-        engine.stop()
-        try startEngine(outputDeviceUID: outputDeviceUID)
     }
 
     func stop() {
@@ -162,29 +157,39 @@ final class ProcessAudioRoute {
 
     deinit { stop() }
 
-    // MARK: - Playback side (AVAudioEngine -> chosen output device)
+    // MARK: - Playback side (AVAudioEngine -> system default output)
 
-    private func startEngine(outputDeviceUID: String) throws {
-        guard let outputAudioUnit = engine.outputNode.audioUnit else {
-            throw CoreAudioError.osStatus(kAudio_ParamError, "engine has no output audio unit")
-        }
-        guard let deviceID = try AudioDeviceManager.outputDevices().first(where: { $0.uid == outputDeviceUID })?.id else {
-            throw CoreAudioError.osStatus(kAudio_ParamError, "unknown output device uid")
-        }
-        var mutableDeviceID = deviceID
-        try AudioDeviceManager.check(
-            AudioUnitSetProperty(outputAudioUnit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0,
-                                  &mutableDeviceID, UInt32(MemoryLayout<AudioDeviceID>.size)),
-            "bind engine output to device"
+    /// The tap's *actual* operating sample rate, read back from the aggregate device
+    /// rather than assumed. The CoreAudio HAL's canonical format is always Float32,
+    /// non-interleaved; a stereo-mixdown tap is always 2 channels -- only the sample
+    /// rate needs to be discovered. Playing back samples tagged with the wrong sample
+    /// rate is what produced the distorted/unclear audio in the first pass of this
+    /// feature: the source node was told it held samples in the *output hardware's*
+    /// format while the ring buffer actually held samples in the *tap's* format.
+    private func tapSampleRate() -> Float64 {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyNominalSampleRate,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
         )
+        var rate: Float64 = 48000
+        var size = UInt32(MemoryLayout<Float64>.size)
+        _ = AudioObjectGetPropertyData(aggregateDeviceID, &address, 0, nil, &size, &rate)
+        return rate
+    }
 
-        let format = engine.outputNode.inputFormat(forBus: 0)
-        let sourceNode = AVAudioSourceNode(format: format) { [ringBuffer] _, _, frameCount, audioBufferList -> OSStatus in
+    private func startEngine() throws {
+        guard let sourceFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: tapSampleRate(),
+                                                channels: 2, interleaved: false) else {
+            throw CoreAudioError.osStatus(kAudio_ParamError, "could not build source format")
+        }
+
+        let sourceNode = AVAudioSourceNode(format: sourceFormat) { [ringBuffer] _, _, frameCount, audioBufferList -> OSStatus in
             ringBuffer.read(frameCount: Int(frameCount), into: audioBufferList)
             return noErr
         }
         engine.attach(sourceNode)
-        engine.connect(sourceNode, to: engine.mainMixerNode, format: format)
+        engine.connect(sourceNode, to: engine.mainMixerNode, format: sourceFormat)
         engine.mainMixerNode.outputVolume = volume
         try engine.start()
     }
@@ -193,12 +198,10 @@ final class ProcessAudioRoute {
 
     private func startIOProc() throws {
         var procID: AudioDeviceIOProcID?
-        let selfPtr = Unmanaged.passUnretained(self).toOpaque()
         let status = AudioDeviceCreateIOProcIDWithBlock(&procID, aggregateDeviceID, nil) { [weak self] _, inInputData, _, _, _ in
             guard let self else { return }
             self.ringBuffer.write(from: inInputData)
         }
-        _ = selfPtr
         try AudioDeviceManager.check(status, "create tap IOProc")
         ioProcID = procID
         try AudioDeviceManager.check(AudioDeviceStart(aggregateDeviceID, procID), "start tap IOProc")
