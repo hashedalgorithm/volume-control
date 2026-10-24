@@ -45,6 +45,14 @@ final class AudioMixerModel: ObservableObject {
     private var outputDeviceUIDs: [pid_t: String] = [:]
     private var missingStreak: [pid_t: Int] = [:]
     private var systemSoundsPID: pid_t?
+    /// `systemsoundserverd` itself drops out of
+    /// kAudioHardwarePropertyProcessObjectList entirely after a while with no sound
+    /// played -- not just its isRunningOutput flag going false, the whole process
+    /// object becomes briefly unqueryable. Caching the last-found identity and only
+    /// ever updating it (never clearing it) keeps the pinned row and its already-
+    /// running route alive through that, instead of the row vanishing whenever no
+    /// alert sound has played recently.
+    private var lastKnownSystemSoundsProcess: AudioProcess?
     private var refreshTimer: Timer?
     private static let genericAppIcon = NSWorkspace.shared.icon(for: .application)
 
@@ -114,8 +122,11 @@ final class AudioMixerModel: ObservableObject {
     }
 
     private func refreshSystemSounds() {
-        guard let process = AudioProcessManager.systemSoundsProcess() else {
-            systemSoundsRow = nil
+        if let liveProcess = AudioProcessManager.systemSoundsProcess() {
+            lastKnownSystemSoundsProcess = liveProcess
+        }
+        guard let process = lastKnownSystemSoundsProcess else {
+            systemSoundsRow = nil // only possible before it's ever been found once
             return
         }
 

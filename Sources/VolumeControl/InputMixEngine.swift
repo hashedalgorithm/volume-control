@@ -162,6 +162,8 @@ final class InputMixEngine: ObservableObject {
     @Published var micSensitivity: Float = 1.0 { didSet { applyMicVolume() } }
     @Published private(set) var isMicMuted = false
     @Published private(set) var apps: [MicMixAppRow] = []
+    @Published private(set) var isInstalling = false
+    @Published var installError: String?
 
     private let engine = AVAudioEngine()
     private let micCaptureEngine = AVAudioEngine()
@@ -288,7 +290,31 @@ final class InputMixEngine: ObservableObject {
     // MARK: - Setup
 
     private func refreshDeviceAvailability() {
-        isDeviceInstalled = AudioDeviceManager.deviceID(forUID: micMixDeviceUID) != nil
+        isDeviceInstalled = MicMixInstaller.isInstalled()
+    }
+
+    /// Runs the install on a background thread since it blocks on the admin-password
+    /// prompt; updates published state back on the main thread when it resolves.
+    func installVirtualDevice() {
+        guard !isInstalling else { return }
+        isInstalling = true
+        installError = nil
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            do {
+                try MicMixInstaller.install()
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    self.isInstalling = false
+                    self.refreshDeviceAvailability()
+                    self.refresh()
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self?.isInstalling = false
+                    self?.installError = error.localizedDescription
+                }
+            }
+        }
     }
 
     private func start() throws {

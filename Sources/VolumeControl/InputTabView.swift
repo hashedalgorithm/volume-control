@@ -9,7 +9,7 @@ struct InputTabView: View {
     var body: some View {
         Group {
             if !model.isDeviceInstalled {
-                NotInstalledView()
+                NotInstalledView(model: model)
             } else {
                 VStack(alignment: .leading, spacing: 0) {
                     VStack(alignment: .leading, spacing: 8) {
@@ -77,26 +77,35 @@ struct InputTabView: View {
 
 @available(macOS 14.2, *)
 private struct NotInstalledView: View {
+    @ObservedObject var model: InputMixEngine
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Label("Virtual mic device not installed", systemImage: "exclamationmark.triangle.fill")
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(.orange)
 
-            Text("Mixing app audio into your mic needs a small virtual audio device. Build and install it once from the terminal:")
+            Text("Mixing app audio into your mic needs a small virtual audio device, installed once into /Library/Audio/Plug-Ins/HAL. This needs your admin password -- macOS will ask for it directly, nothing runs silently.")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
 
-            Text("cd ~/Projects/sound-source-rea/HALPlugin\n./build.sh\nsudo mkdir -p /Library/Audio/Plug-Ins/HAL\nsudo cp -R VolumeControlMicMix.driver /Library/Audio/Plug-Ins/HAL/\nsudo killall coreaudiod")
-                .font(.system(size: 10, design: .monospaced))
-                .foregroundStyle(.primary)
-                .padding(8)
-                .background(.black.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
-                .textSelection(.enabled)
+            if let error = model.installError {
+                Text(error)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.red)
+            }
 
-            Text("Full steps: docs/install-micmix.md in the repo. This tab updates automatically once it's installed.")
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
+            Button(action: { model.installVirtualDevice() }) {
+                if model.isInstalling {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("Installing\u{2026}")
+                    }
+                } else {
+                    Text("Install Virtual Mic Device")
+                }
+            }
+            .disabled(model.isInstalling)
         }
         .padding(14)
     }

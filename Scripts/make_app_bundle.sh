@@ -10,11 +10,18 @@ cd "$(dirname "$0")/.."
 CONFIG="${1:-debug}"
 swift build -c "$CONFIG"
 
+# Build the virtual mic HAL plugin and embed it as a bundled resource so the app can
+# offer a one-click install (MicMixInstaller.swift) instead of requiring a separate
+# manual terminal step.
+./HALPlugin/build.sh
+
 BIN=".build/$CONFIG/VolumeControl"
 APP="$HOME/Applications/VolumeControl.app"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 cp "$BIN" "$APP/Contents/MacOS/VolumeControl"
+rm -rf "$APP/Contents/Resources/VolumeControlMicMix.driver"
+cp -R "HALPlugin/VolumeControlMicMix.driver" "$APP/Contents/Resources/VolumeControlMicMix.driver"
 
 cat > "$APP/Contents/Info.plist" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
