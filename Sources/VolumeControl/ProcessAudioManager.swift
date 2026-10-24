@@ -129,6 +129,7 @@ final class ProcessAudioRoute {
     private var captureFormat = AudioStreamBasicDescription()
     private var currentOutputDeviceUID: String?
     private var formatListenerBlock: AudioObjectPropertyListenerBlock?
+    private var defaultDeviceListenerBlock: AudioObjectPropertyListenerBlock?
 
     var volume: Float = 1.0 {
         didSet { engine.mainMixerNode.outputVolume = volume }
@@ -170,6 +171,7 @@ final class ProcessAudioRoute {
         try startEngine(outputDeviceUID: outputDeviceUID)
         try startIOProc()
         startWatchingForFormatChanges()
+        startWatchingForDefaultDeviceChanges()
     }
 
     /// Switches which physical output device the re-rendered audio plays through,
@@ -182,6 +184,7 @@ final class ProcessAudioRoute {
 
     func stop() {
         stopWatchingForFormatChanges()
+        stopWatchingForDefaultDeviceChanges()
         engine.stop()
         if let ioProcID {
             AudioDeviceStop(aggregateDeviceID, ioProcID)
@@ -245,6 +248,50 @@ final class ProcessAudioRoute {
         // every callback (see startIOProc), so only the playback side -- which bakes
         // the format into a fixed AVAudioFormat -- needs rebuilding.
         try? startEngine(outputDeviceUID: currentOutputDeviceUID)
+    }
+
+    // MARK: - Reacting to the system default output device changing at runtime
+    //
+    // A route with no explicit per-app output override (the default for every app
+    // until the user picks one) relies on AVAudioEngine's own implicit default-output
+    // binding. That binding does not reliably survive the user switching the system's
+    // default output device live (System Settings, Control Center, the menu bar) --
+    // the underlying AUHAL can go stale and stop producing sound until the engine is
+    // torn down and restarted. This previously only got fixed by accident when a
+    // device switch happened to also change the sample rate, which re-triggered the
+    // format-change handler above. Watching the default-device property directly
+    // means it recovers on every switch, not just ones that also change the rate.
+
+    private func startWatchingForDefaultDeviceChanges() {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            self?.handleDefaultOutputDeviceChanged()
+        }
+        defaultDeviceListenerBlock = block
+        AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, DispatchQueue.main, block)
+    }
+
+    private func stopWatchingForDefaultDeviceChanges() {
+        guard let block = defaultDeviceListenerBlock else { return }
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        AudioObjectRemovePropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, DispatchQueue.main, block)
+        defaultDeviceListenerBlock = nil
+    }
+
+    private func handleDefaultOutputDeviceChanged() {
+        // Only routes following the system default need rebinding; an explicit
+        // per-app override keeps pointing at the device the user picked regardless of
+        // what the system default is doing.
+        guard currentOutputDeviceUID == nil else { return }
+        try? startEngine(outputDeviceUID: nil)
     }
 
     deinit { stop() }
