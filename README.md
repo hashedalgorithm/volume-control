@@ -1,88 +1,154 @@
 # Volume Control
 
 A macOS menu-bar volume mixer: per-app volume/mute/output routing, real
-per-device volume levels, and a mic-mixer for calls — built from Apple's
-public CoreAudio process-tap API (`AudioHardwareCreateProcessTap`, macOS
-14.2+) rather than any private framework or kernel extension.
+per-device volume levels, and a mic-mixer for calls.
+
+Built entirely on Apple's public CoreAudio APIs — in particular the process-tap
+API (`AudioHardwareCreateProcessTap`, macOS 14.2+) — rather than any private
+framework or kernel extension. The virtual microphone device is a from-scratch
+`AudioServerPlugIn` (CoreAudio HAL plugin), also public API.
 
 ## Features
 
 **Output tab**
 - Per-app volume, mute, and output-device routing — every app playing audio
-  gets a live slider the moment it starts.
-- Master Volume (the real system output volume) and a pinned System Sounds
-  control for alerts/notifications.
+  gets a live slider the moment it starts, no manual setup per app.
+- Master Volume (the real system output volume, same one the volume keys
+  move) and a pinned System Sounds control for alerts/notifications.
 - Device Levels — macOS's own per-device stored volume/mute for every
-  connected output device.
-- Single/Multiple device-mode switch: see and consolidate whether apps are
-  split across devices.
-- Device-type icons (MacBook speakers, AirPods family, Beats, earbuds,
-  headphones, soundbar/home theater, generic Bluetooth/AirPlay/HDMI).
+  connected output device, exposed directly (this is why a Bluetooth headset
+  and the built-in speakers can sound very different at "the same" volume).
+- Single/Multiple device-mode switch — see at a glance whether apps are split
+  across different output devices, and consolidate back to one in a click
+  (headphones/earbuds prioritized, then built-in speakers).
+- Device-type icons inferred from name and transport: MacBook speakers,
+  AirPods family, Beats, earbuds, headphones, soundbar/home theater, generic
+  Bluetooth/AirPlay/HDMI.
 
 **Input tab**
 - Mix the real microphone (adjustable sensitivity, instant mute) with any
   combination of currently-playing apps' audio, output through a virtual
   "Volume Control Mic Mix" device that FaceTime/WhatsApp/Zoom/etc. can select
-  as their microphone — share app audio on a call without window-hunting.
-- Off by default; nothing touches the mic until explicitly turned on.
-- One-click installer for the virtual mic device (bundled HAL plugin).
+  as their microphone — share an app's audio on a call without hunting for
+  the right window or asking "can you hear that?"
+- Off by default: nothing touches the microphone, and no permission prompt
+  appears, until Input Mixing is explicitly turned on.
+- One-click installer for the virtual mic device, using a single native
+  macOS admin-password prompt rather than manual terminal steps.
 
 **Preferences**
-- Launch at Login (`SMAppService`), default section expand state, About panel.
+- Launch at Login (via `SMAppService`, the real launchd mechanism).
+- Default expand/collapse state per section.
+- About panel.
 
-## Layout
+## Requirements
 
-- `Sources/VolumeControl/` — the menu-bar app (Swift Package)
-  - `AudioDeviceManager.swift` — device enumeration, per-device/master volume
-    and mute, device-type icon inference
-  - `AudioMixerModel.swift` — Output tab's state: per-app routes, System
-    Sounds, Master Volume, Device Levels, Single/Multiple device mode
-  - `ProcessAudioManager.swift` — process enumeration; `ProcessAudioRoute`
-    (per-app capture via process tap, mute-original, re-render through a
-    chosen output device at a chosen volume, live format/default-device
-    reconfiguration)
-  - `AudioRingBuffer.swift` — lock-protected ring buffer between capture and
-    playback render callbacks
-  - `InputMixEngine.swift` / `InputTabView.swift` — Input tab: mic capture +
-    per-app mix sources combined into one `AVAudioEngine`, bound to the
-    virtual mic device
-  - `MicMixInstaller.swift` — installs the bundled HAL plugin via a native
-    admin-password prompt
-  - `PopoverController.swift` — menu-bar status item + the anchored panel
-  - `MixerPanelView.swift` — the Output tab SwiftUI view
-  - `PreferencesView.swift` / `PreferencesWindowController.swift` /
-    `PreferenceKeys.swift` — Preferences window
-  - `main.swift` — entry point (menu-bar only, no Dock icon)
-- `HALPlugin/` — `VolumeControlMicMix.driver`, a from-scratch CoreAudio
-  `AudioServerPlugIn` (see `HALPlugin/src/VolumeControlMicMix.c`) backing the
-  Input tab's virtual mic device
-- `Scripts/make_app_bundle.sh` — wraps the build in a real `.app` bundle
-  (also builds and embeds the HAL plugin); `Scripts/relaunch.sh` — rebuilds
-  and relaunches cleanly during development
-- `docs/install-micmix.md` — manual install steps for the virtual mic device
-  (the in-app installer in the Input tab is the normal path)
+- macOS 14.2 or later (Sonoma) — the per-process audio tap API this app is
+  built on was introduced in 14.2.
+- Xcode command line tools (`xcode-select --install`) to build from source.
 
-## Build
+## Installation
+
+There's no signed/notarized release yet, so building from source is the only
+option for now:
 
 ```bash
+git clone https://github.com/hashedalgorithm/volume-control.git
+cd volume-control
 ./Scripts/make_app_bundle.sh
 open ~/Applications/VolumeControl.app
 ```
 
-Or for quick iteration without packaging:
+This also builds and embeds the virtual-mic HAL plugin used by the Input tab
+(nothing is installed system-wide until you explicitly click "Install Virtual
+Mic Device" from within the app). The app is ad-hoc signed for local use, so
+macOS Gatekeeper may ask you to confirm opening it the first time
+(`System Settings > Privacy & Security`, or right-click → Open).
+
+For quick iteration without packaging into a `.app` (status-item popover
+positioning and some permission prompts behave slightly differently
+unpackaged):
 
 ```bash
 swift build
 .build/debug/VolumeControl
 ```
 
-Requires macOS 14.2+ (process-tap API). First use of per-app routing
-triggers a system permission prompt for system-audio recording; first use
-of Input Mixing triggers a microphone permission prompt.
+## Usage
 
-## Status
+- Click the menu-bar icon to open the panel.
+- **Output tab**: adjust any app's volume/mute/output device directly;
+  expand **Device Levels** to see or fix a specific device's own stored
+  volume; use the **Single/Multiple** switch next to the tabs to consolidate
+  every app onto one output device.
+- **Input tab**: turn on **Input Mixing**, set mic sensitivity, toggle on
+  the apps whose audio you want mixed into your mic, then select "Volume
+  Control Mic Mix" as the microphone in your call app.
+- **Preferences…** (bottom-right of the panel): Launch at Login and default
+  section state.
 
-- [x] Output device switcher, per-app volume/mute/routing
-- [x] Master Volume, System Sounds, Device Levels, Single/Multiple device mode
-- [x] Input tab: mic + app audio mixing into a virtual call microphone
-- [x] Preferences (Launch at Login, default section state, About)
+First use of per-app routing triggers a system permission prompt for
+system-audio recording; first use of Input Mixing triggers a microphone
+permission prompt. Both are one-time, standard macOS TCC prompts.
+
+## How it works
+
+- **Per-app volume/routing**: a private `CATapDescription` process tap mutes
+  the app's direct hardware output and captures its audio; the captured
+  samples are re-rendered through an `AVAudioEngine` bound to whichever
+  output device is chosen, at the chosen volume. No virtual driver needed
+  for this part — see `Sources/VolumeControl/ProcessAudioManager.swift`.
+- **Mic mixing**: the real microphone (captured via a plain `AVAudioEngine`
+  input tap) and any selected apps' tapped audio are combined by one
+  `AVAudioEngine` whose output is bound to the virtual mic device — see
+  `Sources/VolumeControl/InputMixEngine.swift`.
+- **Virtual mic device**: `HALPlugin/VolumeControlMicMix.driver`, a minimal
+  CoreAudio `AudioServerPlugIn` written directly against Apple's
+  `<CoreAudio/AudioServerPlugIn.h>` contract — a single-writer loopback
+  device (VolumeControl.app writes, call apps read), so no in-driver mixing
+  logic is needed. See `HALPlugin/src/VolumeControlMicMix.c`.
+
+## Project layout
+
+```
+Sources/VolumeControl/
+  AudioDeviceManager.swift      device enumeration, per-device/master volume
+                                 and mute, device-type icon inference
+  AudioMixerModel.swift         Output tab state: per-app routes, System
+                                 Sounds, Master Volume, Device Levels, mode
+  ProcessAudioManager.swift     process enumeration; ProcessAudioRoute
+                                 (per-app capture/mute/re-render/reconfigure)
+  AudioRingBuffer.swift         ring buffer between capture and playback
+  InputMixEngine.swift          Input tab: mic + per-app sources -> one engine
+  InputTabView.swift            Input tab SwiftUI view
+  MicMixInstaller.swift         installs the HAL plugin via admin prompt
+  PopoverController.swift       status item + anchored panel window
+  MixerPanelView.swift          Output tab SwiftUI view
+  PreferencesView.swift         Preferences window content
+  PreferencesWindowController.swift
+  PreferenceKeys.swift          shared UserDefaults keys
+  main.swift                    entry point (menu-bar only, no Dock icon)
+
+HALPlugin/                      VolumeControlMicMix.driver (CoreAudio
+                                 AudioServerPlugIn) + its C source and build
+                                 script
+
+Scripts/
+  make_app_bundle.sh            builds the app + HAL plugin, packages .app
+  relaunch.sh                   rebuilds and relaunches cleanly for dev
+
+docs/install-micmix.md          manual install steps for the virtual mic
+                                 device (the in-app installer is the normal
+                                 path; this is the fallback)
+```
+
+## Contributing
+
+Issues and pull requests are welcome. For anything audio-pipeline-related
+(the process tap / HAL plugin code), please include what you tested it on
+(output device type, whether Bluetooth was involved) — a lot of the bugs
+found so far have been device-specific.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
