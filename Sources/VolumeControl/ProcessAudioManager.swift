@@ -134,11 +134,123 @@ final class ProcessAudioRoute {
     private var defaultDeviceListenerBlock: AudioObjectPropertyListenerBlock?
 
     var volume: Float = 1.0 {
-        didSet { engine.mainMixerNode.outputVolume = volume }
+        didSet { applyGain() }
     }
+
+    // MARK: - Boost
+    //
+    // Core Audio's process tap applies its own internal loudness-compensation when it
+    // mixes a tapped process's streams down to stereo (see CATapDescription's
+    // initStereoMixdownOfProcesses) -- not something exposed as a property we can turn
+    // off. Measured directly (coreaudiod's own RTAID RMS/peak logging, same audio
+    // compared with VolumeControl routing it vs. quit and playing natively): routed
+    // peaks sat around -18 to -39 dBFS where native reached -5.6 dBFS, a real ~15-20dB
+    // loss specific to the tap path. Boost is makeup gain applied after capture, before
+    // replay, to compensate -- a second multiplier on top of the normal volume slider.
+    private var boostMode: BoostMode = .off
+    private var boostPercent: Double = BoostPreset.low.rawValue
+    /// Auto mode's own continuously-recomputed compensation; unused by the other modes.
+    private var autoMultiplier: Float = 1.0
+    private let peakLock = NSLock()
+    /// Highest sample magnitude seen since the last auto-gain tick; reset to 0 each tick.
+    private var measuredPeak: Float = 0
+    private var autoGainTimer: Timer?
+
+    private static let autoTickInterval: TimeInterval = 0.15
+    private static let autoTargetPeak: Float = 0.5 // -6 dBFS ceiling, headroom against clipping
+    private static let autoMaxMultiplier: Float = 2.0 // matches custom boost's 100% ceiling
+    /// Gain moves toward a lower multiplier (signal got louder, pull back) fast, and
+    /// toward a higher one (signal got quieter, boost more) slowly -- same asymmetric
+    /// ballistics as a compressor's attack/release, so a brief loud transient doesn't
+    /// get undone instantly but also doesn't clip, while quiet stretches ease up to the
+    /// target rather than pumping.
+    private static let autoAttack: Float = 0.6
+    private static let autoRelease: Float = 0.05
 
     init(process: AudioProcess) {
         self.process = process
+    }
+
+    /// `percent` is ignored (but still stored) for `.off`/`.auto`.
+    func setBoost(mode: BoostMode, percent: Double) {
+        boostMode = mode
+        boostPercent = percent
+        if mode == .auto {
+            startAutoGain()
+        } else {
+            stopAutoGain()
+            autoMultiplier = 1.0 // clean restart if auto is re-enabled later
+        }
+        applyGain()
+    }
+
+    private func applyGain() {
+        let boost: Float
+        switch boostMode {
+        case .off: boost = 1.0
+        case .auto: boost = autoMultiplier
+        case .preset, .custom: boost = 1.0 + Float(boostPercent / 100.0)
+        }
+        engine.mainMixerNode.outputVolume = volume * boost
+    }
+
+    private func startAutoGain() {
+        guard autoGainTimer == nil else { return }
+        peakLock.lock(); measuredPeak = 0; peakLock.unlock()
+        autoGainTimer = Timer.scheduledTimer(withTimeInterval: Self.autoTickInterval, repeats: true) { [weak self] _ in
+            self?.tickAutoGain()
+        }
+    }
+
+    private func stopAutoGain() {
+        autoGainTimer?.invalidate()
+        autoGainTimer = nil
+    }
+
+    private func tickAutoGain() {
+        peakLock.lock()
+        let peak = measuredPeak
+        measuredPeak = 0
+        peakLock.unlock()
+
+        guard peak > 0.001 else { return } // near-silence; hold the last multiplier rather than spiking it
+        let desired = min(Self.autoMaxMultiplier, max(1.0, Self.autoTargetPeak / peak))
+        let coefficient: Float = desired < autoMultiplier ? Self.autoAttack : Self.autoRelease
+        autoMultiplier += (desired - autoMultiplier) * coefficient
+        applyGain()
+    }
+
+    /// Called from the capture IOProc thread (only while boostMode == .auto) with this
+    /// callback's peak sample magnitude; accumulates the loudest one seen since the
+    /// last auto-gain tick. Matches this file's existing convention of taking a plain
+    /// NSLock from inside the IOProc callback (see AudioRingBuffer, used the same way
+    /// a few lines below this).
+    private func recordPeak(_ peak: Float) {
+        guard peak > 0 else { return }
+        peakLock.lock()
+        if peak > measuredPeak { measuredPeak = peak }
+        peakLock.unlock()
+    }
+
+    private static func peak(in data: UnsafePointer<Float>, count: Int) -> Float {
+        var result: Float = 0
+        for i in 0..<count {
+            let magnitude = abs(data[i])
+            if magnitude > result { result = magnitude }
+        }
+        return result
+    }
+
+    private static func peak(inNonInterleaved bufferList: UnsafePointer<AudioBufferList>) -> Float {
+        let abl = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: bufferList))
+        var result: Float = 0
+        for buffer in abl {
+            guard let data = buffer.mData?.assumingMemoryBound(to: Float.self) else { continue }
+            let count = Int(buffer.mDataByteSize) / MemoryLayout<Float>.size
+            let magnitude = peak(in: data, count: count)
+            if magnitude > result { result = magnitude }
+        }
+        return result
     }
 
     func start(outputDeviceUID: String? = nil) throws {
@@ -187,6 +299,7 @@ final class ProcessAudioRoute {
     func stop() {
         stopWatchingForFormatChanges()
         stopWatchingForDefaultDeviceChanges()
+        stopAutoGain()
         engine.stop()
         if let ioProcID {
             AudioDeviceStop(aggregateDeviceID, ioProcID)
@@ -388,7 +501,7 @@ final class ProcessAudioRoute {
         }
         engine.attach(newSourceNode)
         engine.connect(newSourceNode, to: engine.mainMixerNode, format: sourceFormat)
-        engine.mainMixerNode.outputVolume = volume
+        applyGain()
         sourceNode = newSourceNode
         try engine.start()
     }
@@ -410,8 +523,10 @@ final class ProcessAudioRoute {
                 let abl = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inInputData))
                 guard let buffer = abl.first, let data = buffer.mData?.assumingMemoryBound(to: Float.self) else { return }
                 let frameCount = Int(buffer.mDataByteSize) / MemoryLayout<Float>.size / max(channelCount, 1)
+                if self.boostMode == .auto { self.recordPeak(Self.peak(in: data, count: frameCount * channelCount)) }
                 self.ringBuffer.writeInterleaved(data, frameCount: frameCount, channelCount: channelCount)
             } else {
+                if self.boostMode == .auto { self.recordPeak(Self.peak(inNonInterleaved: inInputData)) }
                 self.ringBuffer.write(from: inInputData)
             }
         }

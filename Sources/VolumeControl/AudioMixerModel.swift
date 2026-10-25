@@ -15,10 +15,11 @@ struct AppRow: Identifiable, Equatable {
     var volume: Float
     var isMuted: Bool
     var outputDeviceUID: String?
+    var boost: AppBoostPreference
 
     static func == (lhs: AppRow, rhs: AppRow) -> Bool {
         lhs.id == rhs.id && lhs.volume == rhs.volume && lhs.isMuted == rhs.isMuted
-            && lhs.outputDeviceUID == rhs.outputDeviceUID
+            && lhs.outputDeviceUID == rhs.outputDeviceUID && lhs.boost == rhs.boost
     }
 }
 
@@ -73,6 +74,10 @@ final class AudioMixerModel: ObservableObject {
     /// restarting, the target app restarting, or a full system reboot.
     private let persistedOutputPrefs = PersistedStore<AppOutputPreference>(
         defaultsKey: "outputAppPreferences", defaultValue: AppOutputPreference()
+    )
+    private var boosts: [pid_t: AppBoostPreference] = [:]
+    private let persistedBoostPrefs = PersistedStore<AppBoostPreference>(
+        defaultsKey: "outputAppBoostPreferences", defaultValue: AppBoostPreference()
     )
     private var systemSoundsPID: pid_t?
     /// `systemsoundserverd` itself drops out of
@@ -154,7 +159,8 @@ final class AudioMixerModel: ObservableObject {
                 leadingSystemSymbolName: nil,
                 volume: volumes[pid] ?? 1.0,
                 isMuted: muted.contains(pid),
-                outputDeviceUID: outputDeviceUIDs[pid] ?? AudioDeviceManager.defaultOutputDeviceUID()
+                outputDeviceUID: outputDeviceUIDs[pid] ?? AudioDeviceManager.defaultOutputDeviceUID(),
+                boost: boosts[pid] ?? AppBoostPreference()
             )
         }.sorted { $0.name < $1.name }
     }
@@ -190,7 +196,8 @@ final class AudioMixerModel: ObservableObject {
             leadingSystemSymbolName: "bell.fill",
             volume: volumes[process.pid] ?? 1.0,
             isMuted: muted.contains(process.pid),
-            outputDeviceUID: outputDeviceUIDs[process.pid] ?? AudioDeviceManager.defaultOutputDeviceUID()
+            outputDeviceUID: outputDeviceUIDs[process.pid] ?? AudioDeviceManager.defaultOutputDeviceUID(),
+            boost: boosts[process.pid] ?? AppBoostPreference()
         )
     }
 
@@ -208,6 +215,7 @@ final class AudioMixerModel: ObservableObject {
         if let uid = saved.outputDeviceUID, devices.contains(where: { $0.uid == uid }) {
             outputDeviceUIDs[process.pid] = uid
         }
+        boosts[process.pid] = persistedBoostPrefs.get(process.bundleID)
     }
 
     private func persistPreference(bundleID: String, pid: pid_t) {
@@ -215,11 +223,17 @@ final class AudioMixerModel: ObservableObject {
         persistedOutputPrefs.set(pref, for: bundleID)
     }
 
+    private func persistBoostPreference(bundleID: String, pid: pid_t) {
+        persistedBoostPrefs.set(boosts[pid] ?? AppBoostPreference(), for: bundleID)
+    }
+
     private func startRoute(for process: AudioProcess) {
         let route = ProcessAudioRoute(process: process)
         do {
             try route.start(outputDeviceUID: outputDeviceUIDs[process.pid])
             route.volume = appliedVolume(for: process.pid)
+            let boost = boosts[process.pid] ?? AppBoostPreference()
+            route.setBoost(mode: boost.mode, percent: boost.percent)
             activeRoutes[process.pid] = route
         } catch {
             NSLog("VolumeControl: failed to start capture for \(process.bundleID): \(error)")
@@ -295,6 +309,29 @@ final class AudioMixerModel: ObservableObject {
             }
             self.pendingDeviceSwitchPIDs.remove(pid)
         }
+    }
+
+    /// Switches boost mode for one app. `.preset` and `.custom` keep whatever percent
+    /// was last set for them (see setBoostPercent) rather than resetting it, so
+    /// toggling between modes doesn't lose the value either one was tuned to.
+    func setBoostMode(_ mode: BoostMode, for row: AppRow) {
+        var boost = boosts[row.id] ?? AppBoostPreference()
+        boost.mode = mode
+        boosts[row.id] = boost
+        activeRoutes[row.id]?.setBoost(mode: boost.mode, percent: boost.percent)
+        updateRow(id: row.id) { $0.boost = boost }
+        persistBoostPreference(bundleID: row.bundleID, pid: row.id)
+    }
+
+    /// Sets the extra-gain percentage for `.preset` or `.custom` boost and switches to
+    /// that mode in the same step -- picking a preset/entering a custom value is
+    /// always also the action that turns boost on with it.
+    func setBoostPercent(_ percent: Double, mode: BoostMode, for row: AppRow) {
+        let boost = AppBoostPreference(mode: mode, percent: percent)
+        boosts[row.id] = boost
+        activeRoutes[row.id]?.setBoost(mode: boost.mode, percent: boost.percent)
+        updateRow(id: row.id) { $0.boost = boost }
+        persistBoostPreference(bundleID: row.bundleID, pid: row.id)
     }
 
     func setMasterVolume(_ volume: Float) {

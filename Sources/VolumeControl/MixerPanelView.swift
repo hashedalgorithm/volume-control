@@ -227,7 +227,9 @@ private struct OutputTabView: View {
                                    isDeviceSwitchPending: model.pendingDeviceSwitchPIDs.contains(systemRow.id),
                                    onVolumeChange: { model.setVolume($0, for: systemRow) },
                                    onToggleMute: { model.toggleMute(for: systemRow) },
-                                   onDeviceChange: { model.setOutputDevice($0, for: systemRow) })
+                                   onDeviceChange: { model.setOutputDevice($0, for: systemRow) },
+                                   onBoostModeChange: { model.setBoostMode($0, for: systemRow) },
+                                   onBoostPercentChange: { percent, mode in model.setBoostPercent(percent, mode: mode, for: systemRow) })
                     }
                 }
             }
@@ -264,7 +266,9 @@ private struct OutputTabView: View {
                                        isDeviceSwitchPending: model.pendingDeviceSwitchPIDs.contains(row.id),
                                        onVolumeChange: { model.setVolume($0, for: row) },
                                        onToggleMute: { model.toggleMute(for: row) },
-                                       onDeviceChange: { model.setOutputDevice($0, for: row) })
+                                       onDeviceChange: { model.setOutputDevice($0, for: row) },
+                                       onBoostModeChange: { model.setBoostMode($0, for: row) },
+                                       onBoostPercentChange: { percent, mode in model.setBoostPercent(percent, mode: mode, for: row) })
                         }
                     }
                 } else {
@@ -275,7 +279,9 @@ private struct OutputTabView: View {
                                            isDeviceSwitchPending: model.pendingDeviceSwitchPIDs.contains(row.id),
                                            onVolumeChange: { model.setVolume($0, for: row) },
                                            onToggleMute: { model.toggleMute(for: row) },
-                                           onDeviceChange: { model.setOutputDevice($0, for: row) })
+                                           onDeviceChange: { model.setOutputDevice($0, for: row) },
+                                           onBoostModeChange: { model.setBoostMode($0, for: row) },
+                                           onBoostPercentChange: { percent, mode in model.setBoostPercent(percent, mode: mode, for: row) })
                             }
                         }
                     }
@@ -385,6 +391,106 @@ private struct MasterVolumeRowView: View {
     }
 }
 
+/// Small circular overlay on an app's icon (bottom-left corner) marking that boost is
+/// active for it -- the auto icon when the mode is auto, a plain bolt otherwise (preset
+/// or custom), matching whichever icon the boost button itself shows for that mode.
+@available(macOS 14.2, *)
+private struct BoostBadgeView: View {
+    let mode: BoostMode
+
+    var body: some View {
+        Image(systemName: mode == .auto ? "bolt.automatic.fill" : "bolt.fill")
+            .font(.system(size: 6, weight: .bold))
+            .foregroundStyle(.white)
+            .frame(width: 11, height: 11)
+            .background(Circle().fill(Color.orange))
+            .overlay(Circle().strokeBorder(Color(nsColor: .windowBackgroundColor), lineWidth: 1))
+    }
+}
+
+/// Inline field that appears under an app row once its boost mode is Custom -- typed
+/// percentage is clamped to 10.00...100.00 and rounded to at most 2 decimals on commit
+/// (Return), matching setBoostPercent's contract.
+@available(macOS 14.2, *)
+private struct CustomBoostFieldView: View {
+    let initialPercent: Double
+    let onCommit: (Double) -> Void
+
+    @State private var text: String = ""
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text("Custom boost")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+
+            // .roundedBorder (visibly boxed, like a real input) instead of .plain --
+            // a borderless field here read as static text, not something editable.
+            TextField("10\u{2013}100", text: $text)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 10).monospacedDigit())
+                .multilineTextAlignment(.trailing)
+                .frame(width: 52)
+                .onSubmit(commit)
+
+            Text("%")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+
+            // Explicit save/cancel rather than relying only on Return -- it wasn't
+            // clear typing alone did (or didn't) save anything. Cancel reverts the
+            // field to the last saved percent without applying the typed value. Only
+            // shown once the field actually differs from the saved value, right next
+            // to the field rather than floated to the row's far end.
+            if isDirty {
+                Button(action: commit) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.green)
+                }
+                .buttonStyle(.plain)
+                .help("Save")
+
+                Button(action: cancel) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Cancel")
+            }
+        }
+        .onAppear { text = Self.format(initialPercent) }
+    }
+
+    private var isDirty: Bool {
+        text != Self.format(initialPercent)
+    }
+
+    private func commit() {
+        guard let parsed = Double(text) else {
+            text = Self.format(initialPercent)
+            return
+        }
+        let clamped = min(100, max(10, (parsed * 100).rounded() / 100))
+        text = Self.format(clamped)
+        onCommit(clamped)
+    }
+
+    private func cancel() {
+        text = Self.format(initialPercent)
+    }
+
+    fileprivate static func format(_ value: Double) -> String {
+        let rounded = (value * 100).rounded() / 100
+        if rounded == rounded.rounded() { return String(format: "%.0f", rounded) }
+        var formatted = String(format: "%.2f", rounded)
+        while formatted.hasSuffix("0") { formatted.removeLast() }
+        if formatted.hasSuffix(".") { formatted.removeLast() }
+        return formatted
+    }
+}
+
 @available(macOS 14.2, *)
 private struct AppRowView: View {
     let row: AppRow
@@ -393,6 +499,8 @@ private struct AppRowView: View {
     let onVolumeChange: (Float) -> Void
     let onToggleMute: () -> Void
     let onDeviceChange: (AudioDevice) -> Void
+    let onBoostModeChange: (BoostMode) -> Void
+    let onBoostPercentChange: (Double, BoostMode) -> Void
 
     private var selectedDeviceName: String {
         devices.first(where: { $0.uid == row.outputDeviceUID })?.name ?? "Default"
@@ -402,87 +510,185 @@ private struct AppRowView: View {
         devices.first(where: { $0.uid == row.outputDeviceUID })?.iconSymbolName ?? "hifispeaker.fill"
     }
 
+    private var boostIcon: String {
+        switch row.boost.mode {
+        case .off: return "bolt.slash.fill"
+        case .auto: return "bolt.automatic.fill"
+        case .preset, .custom: return "bolt.fill"
+        }
+    }
+
+    private var boostHelpText: String {
+        switch row.boost.mode {
+        case .off: return "Boost: Off"
+        case .auto: return "Boost: Auto"
+        case .preset, .custom: return "Boost: +\(CustomBoostFieldView.format(row.boost.percent))%"
+        }
+    }
+
+    private var boostValueLabel: String {
+        switch row.boost.mode {
+        case .off: return ""
+        case .auto: return "Auto"
+        case .preset, .custom: return "+\(CustomBoostFieldView.format(row.boost.percent))%"
+        }
+    }
+
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Group {
-                if let symbolName = row.leadingSystemSymbolName {
-                    // Pinned system row (e.g. "System Sounds"): smaller, same
-                    // secondary gray as Master Volume's icon, not a full-size
-                    // full-color app icon.
-                    Image(systemName: symbolName)
-                        .font(.system(size: 13))
-                        .foregroundStyle(.secondary)
-                } else if let icon = row.icon {
-                    Image(nsImage: icon)
-                        .resizable()
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                }
-            }
-            .frame(width: 26, height: 26)
-            .opacity(row.isMuted ? 0.5 : 1.0)
-            .padding(.top, 2)
-
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    Text(row.name)
-                        .font(.system(size: 12, weight: .medium))
-                        .lineLimit(1)
-                        .opacity(row.isMuted ? 0.5 : 1.0)
-
-                    Spacer()
-
-                    Button(action: onToggleMute) {
-                        Image(systemName: speakerIconName(isMuted: row.isMuted, volume: row.volume))
-                            .font(.system(size: 11))
-                            .foregroundStyle(row.isMuted ? .red : .secondary)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .top, spacing: 10) {
+                ZStack(alignment: .bottomLeading) {
+                    Group {
+                        if let symbolName = row.leadingSystemSymbolName {
+                            // Pinned system row (e.g. "System Sounds"): smaller, same
+                            // secondary gray as Master Volume's icon, not a full-size
+                            // full-color app icon.
+                            Image(systemName: symbolName)
+                                .font(.system(size: 13))
+                                .foregroundStyle(.secondary)
+                        } else if let icon = row.icon {
+                            Image(nsImage: icon)
+                                .resizable()
+                                .clipShape(RoundedRectangle(cornerRadius: 6))
+                        }
                     }
-                    .buttonStyle(.plain)
-                    .help(row.isMuted ? "Unmute" : "Mute")
+                    .frame(width: 26, height: 26)
+                    .opacity(row.isMuted ? 0.5 : 1.0)
 
-                    Text("\(Int(row.volume * 100))%")
-                        .font(.system(size: 11, weight: .regular).monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .frame(width: 32, alignment: .trailing)
-                        .opacity(row.isMuted ? 0.5 : 1.0)
+                    if row.boost.mode != .off {
+                        BoostBadgeView(mode: row.boost.mode)
+                            .offset(x: -3, y: 3)
+                    }
                 }
+                .padding(.top, 2)
 
-                HStack(spacing: 6) {
-                    Slider(value: Binding(get: { row.volume }, set: onVolumeChange), in: 0...1)
-                        .opacity(row.isMuted ? 0.5 : 1.0)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        Text(row.name)
+                            .font(.system(size: 12, weight: .medium))
+                            .lineLimit(1)
+                            .opacity(row.isMuted ? 0.5 : 1.0)
 
-                    // A ProgressView placed inside a Menu's label gets bridged to a
-                    // static AppKit snapshot rather than staying a live animating
-                    // view, so it never visibly spun there. Swapping out the whole
-                    // Menu for a plain view while pending keeps it a real, live
-                    // SwiftUI view that actually animates.
-                    if isDeviceSwitchPending {
-                        ProgressView()
-                            .controlSize(.mini)
-                            .frame(width: 16, height: 16)
-                            .help("Switching output device\u{2026}")
-                    } else {
+                        Spacer()
+
+                        Button(action: onToggleMute) {
+                            Image(systemName: speakerIconName(isMuted: row.isMuted, volume: row.volume))
+                                .font(.system(size: 11))
+                                .foregroundStyle(row.isMuted ? .red : .secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help(row.isMuted ? "Unmute" : "Mute")
+
+                        Text("\(Int(row.volume * 100))%")
+                            .font(.system(size: 11, weight: .regular).monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .frame(width: 32, alignment: .trailing)
+                            .opacity(row.isMuted ? 0.5 : 1.0)
+                    }
+
+                    HStack(spacing: 6) {
+                        Slider(value: Binding(get: { row.volume }, set: onVolumeChange), in: 0...1)
+                            .opacity(row.isMuted ? 0.5 : 1.0)
+
+                        // A ProgressView placed inside a Menu's label gets bridged to a
+                        // static AppKit snapshot rather than staying a live animating
+                        // view, so it never visibly spun there. Swapping out the whole
+                        // Menu for a plain view while pending keeps it a real, live
+                        // SwiftUI view that actually animates.
+                        if isDeviceSwitchPending {
+                            ProgressView()
+                                .controlSize(.mini)
+                                .frame(width: 16, height: 16)
+                                .help("Switching output device\u{2026}")
+                        } else {
+                            Menu {
+                                ForEach(devices) { device in
+                                    Button {
+                                        onDeviceChange(device)
+                                    } label: {
+                                        HStack {
+                                            Image(systemName: device.iconSymbolName)
+                                            Text(device.name)
+                                            if device.uid == row.outputDeviceUID {
+                                                Spacer()
+                                                Image(systemName: "checkmark")
+                                            }
+                                        }
+                                    }
+                                }
+                            } label: {
+                                Image(systemName: selectedDeviceIcon)
+                                    .font(.system(size: 10))
+                            }
+                            .menuStyle(.borderlessButton)
+                            .fixedSize()
+                            .help("Output: \(selectedDeviceName)")
+                        }
+
+                        // Dedicated boost control -- compensates for Core Audio's own
+                        // tap-mixdown loudness loss (see ProcessAudioRoute) on top of
+                        // the volume slider above, which tops out at 100%.
                         Menu {
-                            ForEach(devices) { device in
-                                Button {
-                                    onDeviceChange(device)
-                                } label: {
-                                    HStack {
-                                        Image(systemName: device.iconSymbolName)
-                                        Text(device.name)
-                                        if device.uid == row.outputDeviceUID {
-                                            Spacer()
-                                            Image(systemName: "checkmark")
+                            Button {
+                                onBoostModeChange(.off)
+                            } label: {
+                                HStack {
+                                    Text("Off")
+                                    if row.boost.mode == .off { Spacer(); Image(systemName: "checkmark") }
+                                }
+                            }
+                            Button {
+                                onBoostModeChange(.auto)
+                            } label: {
+                                HStack {
+                                    Text("Auto")
+                                    if row.boost.mode == .auto { Spacer(); Image(systemName: "checkmark") }
+                                }
+                            }
+                            Menu("Preset") {
+                                ForEach(BoostPreset.allCases) { preset in
+                                    Button {
+                                        onBoostPercentChange(preset.rawValue, .preset)
+                                    } label: {
+                                        HStack {
+                                            Text(preset.label)
+                                            if row.boost.mode == .preset && row.boost.percent == preset.rawValue {
+                                                Spacer(); Image(systemName: "checkmark")
+                                            }
                                         }
                                     }
                                 }
                             }
+                            Button {
+                                onBoostModeChange(.custom)
+                            } label: {
+                                HStack {
+                                    Text("Custom\u{2026}")
+                                    if row.boost.mode == .custom { Spacer(); Image(systemName: "checkmark") }
+                                }
+                            }
                         } label: {
-                            Image(systemName: selectedDeviceIcon)
+                            Image(systemName: boostIcon)
                                 .font(.system(size: 10))
+                                .foregroundStyle(row.boost.mode == .off ? Color.secondary : Color.orange)
                         }
                         .menuStyle(.borderlessButton)
                         .fixedSize()
-                        .help("Output: \(selectedDeviceName)")
+                        .help(boostHelpText)
+
+                        if row.boost.mode != .off {
+                            Text(boostValueLabel)
+                                .font(.system(size: 9, weight: .medium).monospacedDigit())
+                                .foregroundStyle(.orange)
+                                .lineLimit(1)
+                                .fixedSize()
+                        }
+                    }
+
+                    if row.boost.mode == .custom {
+                        CustomBoostFieldView(initialPercent: row.boost.percent) { percent in
+                            onBoostPercentChange(percent, .custom)
+                        }
                     }
                 }
             }
