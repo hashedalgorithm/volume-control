@@ -9,6 +9,11 @@ cd "$(dirname "$0")"
 BUNDLE="VolumeControlMicMix.driver"
 OUT="$BUNDLE/Contents/MacOS/VolumeControlMicMix"
 
+# Contents/MacOS/ only existed locally because it was created by hand once;
+# it's not in git (the binary itself is gitignored), so a fresh checkout --
+# e.g. CI -- has no such directory for clang/lipo to write into.
+mkdir -p "$(dirname "$OUT")"
+
 clang -arch arm64 -arch x86_64 \
     -fobjc-arc -dynamiclib \
     -framework CoreFoundation -framework CoreAudio \
