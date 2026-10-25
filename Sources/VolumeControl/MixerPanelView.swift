@@ -204,7 +204,7 @@ private struct OutputTabView: View {
     // UserDefaults keys Preferences reads/writes, so manually toggling a section here
     // and setting its default in Preferences are the same action, not two things that
     // can drift out of sync.
-    @AppStorage(PreferenceKeys.systemExpanded) private var isSystemExpanded = true
+    @AppStorage(PreferenceKeys.systemExpanded) private var isSystemExpanded = false
     @AppStorage(PreferenceKeys.deviceLevelsExpanded) private var isDeviceLevelsExpanded = false
     @AppStorage(PreferenceKeys.applicationsExpanded) private var isApplicationsExpanded = true
 

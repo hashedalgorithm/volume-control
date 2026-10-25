@@ -68,10 +68,15 @@ jobs:
 
       - name: Create DMG
         run: |
-          mkdir -p dist
+          # Stage the .app alongside a symlink to /Applications so the mounted
+          # DMG shows the familiar "drag app onto Applications" install window,
+          # instead of just the bare .app with nowhere to drop it.
+          mkdir -p dist/dmg-stage
+          cp -R "$HOME/Applications/VolumeControl.app" dist/dmg-stage/
+          ln -s /Applications dist/dmg-stage/Applications
           hdiutil create \
             -volname "Volume Control" \
-            -srcfolder "$HOME/Applications/VolumeControl.app" \
+            -srcfolder dist/dmg-stage \
             -ov -format UDZO \
             "dist/VolumeControl-${{ steps.version.outputs.version }}.dmg"
 

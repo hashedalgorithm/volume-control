@@ -138,11 +138,15 @@ private final class MicMixAppSource {
 
 struct MicMixAppRow: Identifiable, Equatable {
     let id: pid_t
+    let bundleID: String
     let name: String
     let icon: NSImage
     var isIncluded: Bool
     var mixVolume: Float
 }
+
+private let micSensitivityDefaultsKey = "inputMicSensitivity"
+private let micMutedDefaultsKey = "inputMicMuted"
 
 /// Input tab's model: mixes the real microphone (gain-controllable, instantly mutable)
 /// with zero or more selected apps' audio, and writes the result into the "Volume
@@ -166,7 +170,12 @@ final class InputMixEngine: ObservableObject {
     /// was picking up and passing through typing noise etc. with no way to stop it
     /// short of quitting the app.
     @Published private(set) var isEnabled = false
-    @Published var micSensitivity: Float = 1.0 { didSet { applyMicVolume() } }
+    @Published var micSensitivity: Float = 1.0 {
+        didSet {
+            applyMicVolume()
+            UserDefaults.standard.set(micSensitivity, forKey: micSensitivityDefaultsKey)
+        }
+    }
     @Published private(set) var isMicMuted = false
     @Published private(set) var apps: [MicMixAppRow] = []
     @Published private(set) var isInstalling = false
@@ -179,15 +188,27 @@ final class InputMixEngine: ObservableObject {
 
     private var appSources: [pid_t: MicMixAppSource] = [:]
     private var appSourceNodes: [pid_t: AVAudioSourceNode] = [:]
+    /// Live, in-session cache -- pids are a new random number every process launch.
     private var includedApps: Set<pid_t> = []
     private var mixVolumes: [pid_t: Float] = [:]
     private var missingStreak: [pid_t: Int] = [:]
     private var refreshTimer: Timer?
+    /// The actual persisted store, keyed by bundle ID. Does NOT include the master
+    /// isEnabled switch itself -- that deliberately always starts off (see setEnabled),
+    /// so a restart never silently resumes microphone capture.
+    private let persistedMixPrefs = PersistedStore<AppMixPreference>(
+        defaultsKey: "inputMixAppPreferences", defaultValue: AppMixPreference()
+    )
 
     private static let genericAppIcon = NSWorkspace.shared.icon(for: .application)
     private static let missingPollsBeforeStop = 3
 
     init() {
+        if UserDefaults.standard.object(forKey: micSensitivityDefaultsKey) != nil {
+            micSensitivity = UserDefaults.standard.float(forKey: micSensitivityDefaultsKey)
+        }
+        isMicMuted = UserDefaults.standard.bool(forKey: micMutedDefaultsKey)
+
         refreshDeviceAvailability()
         // Always-on lightweight polling: device-installed status and the list of apps
         // currently playing audio. Neither touches the mic or starts anything -- that
@@ -228,6 +249,10 @@ final class InputMixEngine: ObservableObject {
         let processes = AudioProcessManager.runningAudioProcesses()
         let currentPIDs = Set(processes.map(\.pid))
 
+        for process in processes {
+            seedLiveStateIfNeeded(for: process)
+        }
+
         if isEnabled {
             for pid in Array(appSources.keys) where !currentPIDs.contains(pid) {
                 let streak = (missingStreak[pid] ?? 0) + 1
@@ -252,12 +277,32 @@ final class InputMixEngine: ObservableObject {
             let running = NSRunningApplication(processIdentifier: process.pid)
             return MicMixAppRow(
                 id: process.pid,
+                bundleID: process.bundleID,
                 name: running?.localizedName ?? process.bundleID,
                 icon: running?.icon ?? Self.genericAppIcon,
                 isIncluded: includedApps.contains(process.pid),
                 mixVolume: mixVolumes[process.pid] ?? 1.0
             )
         }.sorted { $0.name < $1.name }
+    }
+
+    /// Seeds this pid's live cache from the bundle-ID-keyed persisted store the first
+    /// time it's seen this session -- mirrors AudioMixerModel.seedLiveStateIfNeeded(for:).
+    /// Does NOT start capture by itself even if isIncluded was persisted true; that only
+    /// happens once the master switch is explicitly turned on (see setEnabled), which
+    /// then attaches sources for everything already in includedApps.
+    private func seedLiveStateIfNeeded(for process: AudioProcess) {
+        guard mixVolumes[process.pid] == nil else { return }
+        let saved = persistedMixPrefs.get(process.bundleID)
+        mixVolumes[process.pid] = saved.mixVolume
+        if saved.isIncluded {
+            includedApps.insert(process.pid)
+        }
+    }
+
+    private func persistMixPreference(bundleID: String, pid: pid_t) {
+        let pref = AppMixPreference(isIncluded: includedApps.contains(pid), mixVolume: mixVolumes[pid] ?? 1.0)
+        persistedMixPrefs.set(pref, for: bundleID)
     }
 
     /// Toggling inclusion works whether or not the master switch is on -- if off, this
@@ -277,6 +322,7 @@ final class InputMixEngine: ObservableObject {
                 }
             }
         }
+        persistMixPreference(bundleID: row.bundleID, pid: row.id)
         refresh()
     }
 
@@ -286,11 +332,13 @@ final class InputMixEngine: ObservableObject {
         if let index = apps.firstIndex(where: { $0.id == row.id }) {
             apps[index].mixVolume = volume
         }
+        persistMixPreference(bundleID: row.bundleID, pid: row.id)
     }
 
     func toggleMicMute() {
         isMicMuted.toggle()
         applyMicVolume()
+        UserDefaults.standard.set(isMicMuted, forKey: micMutedDefaultsKey)
     }
 
     func shutdown() {

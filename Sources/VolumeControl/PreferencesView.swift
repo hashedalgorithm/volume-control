@@ -10,7 +10,7 @@ struct PreferencesView: View {
     // Items directly.
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
 
-    @AppStorage(PreferenceKeys.systemExpanded) private var systemExpanded = true
+    @AppStorage(PreferenceKeys.systemExpanded) private var systemExpanded = false
     @AppStorage(PreferenceKeys.deviceLevelsExpanded) private var deviceLevelsExpanded = false
     @AppStorage(PreferenceKeys.applicationsExpanded) private var applicationsExpanded = true
 

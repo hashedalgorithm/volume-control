@@ -65,6 +65,15 @@ final class AudioMixerModel: ObservableObject {
     private var muted: Set<pid_t> = []
     private var outputDeviceUIDs: [pid_t: String] = [:]
     private var missingStreak: [pid_t: Int] = [:]
+    /// pid-keyed dicts above are the live, in-session cache -- pids are a new random
+    /// number every process launch, useless as a persistence key. This is the actual
+    /// persisted store, keyed by bundle ID, written through on every change and read
+    /// to seed a process's live state the first time it's seen each session (see
+    /// seedLiveStateIfNeeded(for:)), which is what makes a setting survive the app
+    /// restarting, the target app restarting, or a full system reboot.
+    private let persistedOutputPrefs = PersistedStore<AppOutputPreference>(
+        defaultsKey: "outputAppPreferences", defaultValue: AppOutputPreference()
+    )
     private var systemSoundsPID: pid_t?
     /// `systemsoundserverd` itself drops out of
     /// kAudioHardwarePropertyProcessObjectList entirely after a while with no sound
@@ -114,6 +123,7 @@ final class AudioMixerModel: ObservableObject {
         for process in processes {
             missingStreak[process.pid] = 0
             guard activeRoutes[process.pid] == nil else { continue }
+            seedLiveStateIfNeeded(for: process)
             startRoute(for: process)
         }
 
@@ -168,6 +178,7 @@ final class AudioMixerModel: ObservableObject {
         }
 
         if activeRoutes[process.pid] == nil {
+            seedLiveStateIfNeeded(for: process)
             startRoute(for: process)
         }
 
@@ -181,6 +192,27 @@ final class AudioMixerModel: ObservableObject {
             isMuted: muted.contains(process.pid),
             outputDeviceUID: outputDeviceUIDs[process.pid] ?? AudioDeviceManager.defaultOutputDeviceUID()
         )
+    }
+
+    /// Loads this bundle ID's saved preference into the live pid-keyed cache, but only
+    /// the first time this pid is seen this session (guarded by volumes[pid] == nil) --
+    /// later live edits must win over the stale saved value for the rest of the
+    /// session. Skips restoring a saved output device that's no longer actually
+    /// connected, so a route doesn't fail to start over a device that's since been
+    /// unplugged/disconnected -- falls through to the normal default-device behavior.
+    private func seedLiveStateIfNeeded(for process: AudioProcess) {
+        guard volumes[process.pid] == nil else { return }
+        let saved = persistedOutputPrefs.get(process.bundleID)
+        volumes[process.pid] = saved.volume
+        if saved.isMuted { muted.insert(process.pid) }
+        if let uid = saved.outputDeviceUID, devices.contains(where: { $0.uid == uid }) {
+            outputDeviceUIDs[process.pid] = uid
+        }
+    }
+
+    private func persistPreference(bundleID: String, pid: pid_t) {
+        let pref = AppOutputPreference(volume: volumes[pid] ?? 1.0, isMuted: muted.contains(pid), outputDeviceUID: outputDeviceUIDs[pid])
+        persistedOutputPrefs.set(pref, for: bundleID)
     }
 
     private func startRoute(for process: AudioProcess) {
@@ -212,6 +244,7 @@ final class AudioMixerModel: ObservableObject {
         volumes[row.id] = volume
         activeRoutes[row.id]?.volume = appliedVolume(for: row.id)
         updateRow(id: row.id) { $0.volume = volume }
+        persistPreference(bundleID: row.bundleID, pid: row.id)
     }
 
     func toggleMute(for row: AppRow) {
@@ -222,6 +255,7 @@ final class AudioMixerModel: ObservableObject {
         }
         activeRoutes[row.id]?.volume = appliedVolume(for: row.id)
         updateRow(id: row.id) { $0.isMuted = self.muted.contains(row.id) }
+        persistPreference(bundleID: row.bundleID, pid: row.id)
     }
 
     /// Switching the output device the first time can report success before the device
@@ -235,6 +269,7 @@ final class AudioMixerModel: ObservableObject {
     func setOutputDevice(_ device: AudioDevice, for row: AppRow) {
         outputDeviceUIDs[row.id] = device.uid
         updateRow(id: row.id) { $0.outputDeviceUID = device.uid }
+        persistPreference(bundleID: row.bundleID, pid: row.id)
         guard let route = activeRoutes[row.id] else { return }
 
         let pid = row.id
