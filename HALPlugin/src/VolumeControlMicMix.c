@@ -436,9 +436,18 @@ static OSStatus Driver_GetPropertyData(AudioServerPlugInDriverRef inDriver, Audi
                 *(UInt32 *)outData = 1; *outDataSize = sizeof(UInt32); return noErr;
             case kAudioDevicePropertyDeviceIsRunning:
                 *(UInt32 *)outData = gState.startedClientCount > 0 ? 1 : 0; *outDataSize = sizeof(UInt32); return noErr;
+            // Must be 1, not just technically settable via a direct HAL write: this is
+            // the flag System Settings' Sound pane, a call app's own mic picker, and
+            // most other device-list UIs check before even listing a device as a
+            // selectable input choice -- at 0 (the previous value here, with the
+            // intent of never having macOS auto-pick it) every one of those UIs
+            // correctly hid it entirely, which also hid it from being manually picked,
+            // not just from auto-selection. macOS doesn't auto-promote a virtual device
+            // to default just because this is 1 -- real third-party virtual mice (e.g.
+            // BlackHole) ship with it set this way and aren't auto-selected either.
             case kAudioDevicePropertyDeviceCanBeDefaultDevice:
             case kAudioDevicePropertyDeviceCanBeDefaultSystemDevice:
-                *(UInt32 *)outData = 0; *outDataSize = sizeof(UInt32); return noErr; // opt-in only, never auto-default
+                *(UInt32 *)outData = 1; *outDataSize = sizeof(UInt32); return noErr;
             case kAudioDevicePropertyLatency:
             case kAudioDevicePropertySafetyOffset:
                 *(UInt32 *)outData = 0; *outDataSize = sizeof(UInt32); return noErr;

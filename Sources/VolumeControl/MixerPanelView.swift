@@ -204,7 +204,6 @@ private struct OutputTabView: View {
     // UserDefaults keys Preferences reads/writes, so manually toggling a section here
     // and setting its default in Preferences are the same action, not two things that
     // can drift out of sync.
-    @AppStorage(PreferenceKeys.systemExpanded) private var isSystemExpanded = false
     @AppStorage(PreferenceKeys.deviceLevelsExpanded) private var isDeviceLevelsExpanded = false
     @AppStorage(PreferenceKeys.applicationsExpanded) private var isApplicationsExpanded = true
 
@@ -230,33 +229,22 @@ private struct OutputTabView: View {
                 Divider()
             }
 
-            CollapsibleSection(title: "SYSTEM", isExpanded: $isSystemExpanded) {
-                VStack(spacing: 2) {
-                    if let systemRow = model.systemSoundsRow {
-                        AppRowView(row: systemRow, devices: model.devices,
-                                   isDeviceSwitchPending: model.pendingDeviceSwitchPIDs.contains(systemRow.id),
-                                   onVolumeChange: { model.setVolume($0, for: systemRow) },
-                                   onToggleMute: { model.toggleMute(for: systemRow) },
-                                   onDeviceChange: { model.setOutputDevice($0, for: systemRow) },
-                                   onBoostModeChange: { model.setBoostMode($0, for: systemRow) },
-                                   onBoostPercentChange: { percent, mode in model.setBoostPercent(percent, mode: mode, for: systemRow) })
-                    }
-                }
-            }
-
-            Divider()
-
-            CollapsibleSection(title: "APPLICATIONS", trailingLabel: "\(model.apps.count)", isExpanded: $isApplicationsExpanded) {
-                if model.apps.isEmpty {
+            // System Sounds is pinned at the top of this section rather than its own
+            // collapsible section -- removed per request once Master Volume (the
+            // section's other occupant) was removed, since a one-row section wasn't
+            // worth the extra chrome.
+            CollapsibleSection(title: "APPLICATIONS", trailingLabel: "\(totalRowCount)", isExpanded: $isApplicationsExpanded) {
+                if totalRowCount == 0 {
                     Text("No apps currently playing audio")
                         .foregroundStyle(.secondary)
                         .font(.callout)
                         .padding(.horizontal, 14)
-                } else if model.apps.count <= Self.maxRowsBeforeScroll {
+                } else if totalRowCount <= Self.maxRowsBeforeScroll {
                     // Plain VStack, no ScrollView: lets SwiftUI size the popover to
                     // its true natural height with no ambiguity, which is what
                     // actually guarantees no scrollbar up to this many rows.
                     VStack(spacing: 2) {
+                        systemSoundsRowView
                         ForEach(model.apps) { row in
                             AppRowView(row: row, devices: model.devices,
                                        isDeviceSwitchPending: model.pendingDeviceSwitchPIDs.contains(row.id),
@@ -270,6 +258,7 @@ private struct OutputTabView: View {
                 } else {
                     ScrollView {
                         VStack(spacing: 2) {
+                            systemSoundsRowView
                             ForEach(model.apps) { row in
                                 AppRowView(row: row, devices: model.devices,
                                            isDeviceSwitchPending: model.pendingDeviceSwitchPIDs.contains(row.id),
@@ -284,6 +273,23 @@ private struct OutputTabView: View {
                     .frame(height: 260) // fixed, screen-safe; longer lists scroll within this
                 }
             }
+        }
+    }
+
+    private var totalRowCount: Int {
+        model.apps.count + (model.systemSoundsRow != nil ? 1 : 0)
+    }
+
+    @ViewBuilder
+    private var systemSoundsRowView: some View {
+        if let systemRow = model.systemSoundsRow {
+            AppRowView(row: systemRow, devices: model.devices,
+                       isDeviceSwitchPending: model.pendingDeviceSwitchPIDs.contains(systemRow.id),
+                       onVolumeChange: { model.setVolume($0, for: systemRow) },
+                       onToggleMute: { model.toggleMute(for: systemRow) },
+                       onDeviceChange: { model.setOutputDevice($0, for: systemRow) },
+                       onBoostModeChange: { model.setBoostMode($0, for: systemRow) },
+                       onBoostPercentChange: { percent, mode in model.setBoostPercent(percent, mode: mode, for: systemRow) })
         }
     }
 }

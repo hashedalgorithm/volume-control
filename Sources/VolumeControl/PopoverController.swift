@@ -14,7 +14,7 @@ private final class AnchoredPanel: NSPanel {
 }
 
 @available(macOS 14.2, *)
-final class PopoverController: NSObject {
+final class PopoverController: NSObject, NSApplicationDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     private let model = AudioMixerModel()
     private let inputModel = InputMixEngine()
@@ -120,7 +120,20 @@ final class PopoverController: NSObject {
     }
 
     private func quit() {
-        model.shutdown()
         NSApp.terminate(nil)
+    }
+
+    /// The real catch-all teardown. Verified directly, not assumed: an external
+    /// AppleEvent "quit" (what Scripts/relaunch.sh sends) left the process alive for
+    /// several seconds with no visible effect, until this exact moment showed up in
+    /// Console -- "[com.apple.AppKit:Application] Asking app delegate whether
+    /// applicationShouldTerminate:" -- yet applicationWillTerminate's own debug log
+    /// never fired at all for that same quit. So the cleanup lives here, in the
+    /// method AppKit is actually confirmed (via that log line) to call, rather than
+    /// relying on applicationWillTerminate firing afterwards as docs would suggest.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        model.shutdown()
+        inputModel.shutdown()
+        return .terminateNow
     }
 }

@@ -3,7 +3,6 @@
 /// its "default for next launch" are the same stored value, not two things that can
 /// drift apart.
 enum PreferenceKeys {
-    static let systemExpanded = "sectionSystemExpanded"
     static let deviceLevelsExpanded = "sectionDeviceLevelsExpanded"
     static let applicationsExpanded = "sectionApplicationsExpanded"
 }

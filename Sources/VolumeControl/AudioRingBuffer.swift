@@ -94,4 +94,31 @@ final class AudioRingBuffer {
             }
         }
     }
+
+    /// Same contract as read(frameCount:into:), straight into channel-major Swift
+    /// arrays instead of a driver-facing AudioBufferList -- used by InputMixEngine's
+    /// manual sample-level mixing, which has no AudioBufferList of its own to fill (it
+    /// builds the final interleaved device buffer itself after summing).
+    /// `channels` must already have at least `frameCount` capacity per channel array;
+    /// channels beyond what this buffer actually holds are filled with silence.
+    func read(frameCount: Int, intoChannels channels: inout [[Float]]) {
+        lock.lock()
+        let available = min(frameCount, filled)
+        let source = channelBuffers
+        let start = readIndex
+        readIndex = (readIndex + available) % max(capacityFrames, 1)
+        filled -= available
+        lock.unlock()
+
+        for channel in 0..<channels.count {
+            let src = channel < source.count ? source[channel] : []
+            for frame in 0..<frameCount {
+                if frame < available, !src.isEmpty {
+                    channels[channel][frame] = src[(start + frame) % capacityFrames]
+                } else {
+                    channels[channel][frame] = 0
+                }
+            }
+        }
+    }
 }

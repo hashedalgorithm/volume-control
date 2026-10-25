@@ -10,7 +10,6 @@ struct PreferencesView: View {
     // Items directly.
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
 
-    @AppStorage(PreferenceKeys.systemExpanded) private var systemExpanded = false
     @AppStorage(PreferenceKeys.deviceLevelsExpanded) private var deviceLevelsExpanded = false
     @AppStorage(PreferenceKeys.applicationsExpanded) private var applicationsExpanded = true
 
@@ -49,7 +48,6 @@ struct PreferencesView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
-                Toggle("System expanded", isOn: $systemExpanded)
                 Toggle("Device Levels expanded", isOn: $deviceLevelsExpanded)
                 Toggle("Applications expanded", isOn: $applicationsExpanded)
             }

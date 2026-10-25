@@ -72,6 +72,43 @@ enum AudioDeviceManager {
         }
     }
 
+    /// Real (non-virtual, non-aggregate), input-capable devices -- used as a fallback
+    /// when the system's current default input can't be trusted as "the real mic"
+    /// (see InputMixEngine.start()): if a previous, unclean session left the default
+    /// input pointed at our own mic-mix virtual device, reading that back and pinning
+    /// micCaptureEngine to it would create a feedback loop -- it'd read back exactly
+    /// what our own engine just wrote to that same device's output. Confirmed directly
+    /// via the HAL driver's own source: VolumeControlMicMix.c uses one shared ring
+    /// buffer for both scopes, so whatever's written to its output is exactly what
+    /// comes back on its input.
+    static func inputDevices() -> [AudioDevice] {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var dataSize: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &dataSize) == noErr else {
+            return []
+        }
+        let count = Int(dataSize) / MemoryLayout<AudioObjectID>.size
+        var ids = [AudioObjectID](repeating: 0, count: count)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &dataSize, &ids) == noErr else {
+            return []
+        }
+
+        return ids.compactMap { deviceID in
+            guard hasInputStreams(deviceID) else { return nil }
+            let transportType = transportTypeProperty(deviceID)
+            guard transportType != kAudioDeviceTransportTypeVirtual, transportType != kAudioDeviceTransportTypeAggregate else {
+                return nil
+            }
+            guard let uid = stringProperty(deviceID, selector: kAudioDevicePropertyDeviceUID),
+                  let name = stringProperty(deviceID, selector: kAudioObjectPropertyName) else { return nil }
+            return AudioDevice(id: deviceID, uid: uid, name: name, transportType: transportType)
+        }
+    }
+
     /// Finds a device by UID with no virtual/output filtering -- needed to locate
     /// VolumeControl's own "Volume Control Mic Mix" virtual device (UID
     /// "com.volumecontrol.micmix"), which outputDevices() deliberately excludes since
@@ -121,6 +158,28 @@ enum AudioDeviceManager {
     static func defaultOutputDeviceUID() -> String? {
         guard let deviceID = defaultOutputDeviceID() else { return nil }
         return stringProperty(deviceID, selector: kAudioDevicePropertyDeviceUID)
+    }
+
+    static func defaultInputDeviceUID() -> String? {
+        guard let deviceID = defaultInputDeviceID() else { return nil }
+        return stringProperty(deviceID, selector: kAudioDevicePropertyDeviceUID)
+    }
+
+    /// Switches which device the system (and therefore any app, e.g. a call app,
+    /// that just uses whatever the system default is rather than offering its own
+    /// picker) treats as the microphone -- same property the Sound settings pane's
+    /// Input picker writes.
+    @discardableResult
+    static func setDefaultInputDevice(_ deviceID: AudioObjectID) -> Bool {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var mutableDeviceID = deviceID
+        let status = AudioObjectSetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil,
+                                                 UInt32(MemoryLayout<AudioObjectID>.size), &mutableDeviceID)
+        return status == noErr
     }
 
     /// A device's own stored volume -- the same per-device level the volume keys,
@@ -199,6 +258,17 @@ enum AudioDeviceManager {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyStreams,
             mScope: kAudioObjectPropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var dataSize: UInt32 = 0
+        let status = AudioObjectGetPropertyDataSize(deviceID, &address, 0, nil, &dataSize)
+        return status == noErr && dataSize > 0
+    }
+
+    private static func hasInputStreams(_ deviceID: AudioObjectID) -> Bool {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyStreams,
+            mScope: kAudioObjectPropertyScopeInput,
             mElement: kAudioObjectPropertyElementMain
         )
         var dataSize: UInt32 = 0
