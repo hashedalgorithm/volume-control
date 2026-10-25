@@ -54,8 +54,6 @@ final class AudioMixerModel: ObservableObject {
     @Published private(set) var apps: [AppRow] = []
     @Published private(set) var systemSoundsRow: AppRow?
     @Published private(set) var devices: [AudioDevice] = []
-    @Published private(set) var masterVolume: Float = 1.0
-    @Published private(set) var isMasterMuted: Bool = false
     @Published private(set) var deviceLevels: [DeviceLevelRow] = []
     /// pids currently mid-device-switch: muted and showing a loading indicator instead
     /// of the device icon (see setOutputDevice(_:for:)).
@@ -106,13 +104,9 @@ final class AudioMixerModel: ObservableObject {
 
     func refresh() {
         devices = AudioDeviceManager.outputDevices()
-        // Ground truth for master volume/mute lives in the OS (volume keys, Control
-        // Center can change it outside this app), so read it fresh each time rather
-        // than tracking our own copy -- unlike per-app volume, which only we control.
-        if let liveVolume = AudioDeviceManager.masterVolume() {
-            masterVolume = liveVolume
-        }
-        isMasterMuted = AudioDeviceManager.isMasterMuted()
+        // Ground truth lives in the OS (volume keys, Control Center can change it
+        // outside this app), so read it fresh each time rather than tracking our own
+        // copy -- unlike per-app volume, which only we control.
         // Same read-through approach, per device: this is macOS's own stored level for
         // each device, which other apps/the volume keys can also change.
         deviceLevels = devices.compactMap { device in
@@ -332,16 +326,6 @@ final class AudioMixerModel: ObservableObject {
         activeRoutes[row.id]?.setBoost(mode: boost.mode, percent: boost.percent)
         updateRow(id: row.id) { $0.boost = boost }
         persistBoostPreference(bundleID: row.bundleID, pid: row.id)
-    }
-
-    func setMasterVolume(_ volume: Float) {
-        masterVolume = volume
-        AudioDeviceManager.setMasterVolume(volume)
-    }
-
-    func toggleMasterMute() {
-        isMasterMuted.toggle()
-        AudioDeviceManager.setMasterMuted(isMasterMuted)
     }
 
     /// Purely derived from the actual current per-row output device selections -- not

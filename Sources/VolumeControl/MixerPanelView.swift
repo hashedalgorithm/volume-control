@@ -216,26 +216,6 @@ private struct OutputTabView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            CollapsibleSection(title: "SYSTEM", trailingLabel: "\(Int(model.masterVolume * 100))%", isExpanded: $isSystemExpanded) {
-                VStack(spacing: 2) {
-                    MasterVolumeRowView(volume: model.masterVolume, isMuted: model.isMasterMuted,
-                                         onVolumeChange: { model.setMasterVolume($0) },
-                                         onToggleMute: { model.toggleMasterMute() })
-
-                    if let systemRow = model.systemSoundsRow {
-                        AppRowView(row: systemRow, devices: model.devices,
-                                   isDeviceSwitchPending: model.pendingDeviceSwitchPIDs.contains(systemRow.id),
-                                   onVolumeChange: { model.setVolume($0, for: systemRow) },
-                                   onToggleMute: { model.toggleMute(for: systemRow) },
-                                   onDeviceChange: { model.setOutputDevice($0, for: systemRow) },
-                                   onBoostModeChange: { model.setBoostMode($0, for: systemRow) },
-                                   onBoostPercentChange: { percent, mode in model.setBoostPercent(percent, mode: mode, for: systemRow) })
-                    }
-                }
-            }
-
-            Divider()
-
             if !model.deviceLevels.isEmpty {
                 CollapsibleSection(title: "DEVICE LEVELS", trailingLabel: model.deviceMode.rawValue, isExpanded: $isDeviceLevelsExpanded) {
                     VStack(spacing: 2) {
@@ -249,6 +229,22 @@ private struct OutputTabView: View {
 
                 Divider()
             }
+
+            CollapsibleSection(title: "SYSTEM", isExpanded: $isSystemExpanded) {
+                VStack(spacing: 2) {
+                    if let systemRow = model.systemSoundsRow {
+                        AppRowView(row: systemRow, devices: model.devices,
+                                   isDeviceSwitchPending: model.pendingDeviceSwitchPIDs.contains(systemRow.id),
+                                   onVolumeChange: { model.setVolume($0, for: systemRow) },
+                                   onToggleMute: { model.toggleMute(for: systemRow) },
+                                   onDeviceChange: { model.setOutputDevice($0, for: systemRow) },
+                                   onBoostModeChange: { model.setBoostMode($0, for: systemRow) },
+                                   onBoostPercentChange: { percent, mode in model.setBoostPercent(percent, mode: mode, for: systemRow) })
+                    }
+                }
+            }
+
+            Divider()
 
             CollapsibleSection(title: "APPLICATIONS", trailingLabel: "\(model.apps.count)", isExpanded: $isApplicationsExpanded) {
                 if model.apps.isEmpty {
@@ -333,57 +329,6 @@ private struct DeviceLevelRowView: View {
 
                 Slider(value: Binding(get: { row.volume }, set: onVolumeChange), in: 0...1)
                     .opacity(row.isMuted ? 0.5 : 1.0)
-            }
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 6)
-    }
-}
-
-@available(macOS 14.2, *)
-private struct MasterVolumeRowView: View {
-    let volume: Float
-    let isMuted: Bool
-    let onVolumeChange: (Float) -> Void
-    let onToggleMute: () -> Void
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            // Distinct from the mute button's speaker glyph below -- a mixer/fader
-            // icon reads as "master control" rather than duplicating a speaker icon.
-            Image(systemName: "slider.horizontal.3")
-                .font(.system(size: 15))
-                .foregroundStyle(.secondary)
-                .frame(width: 26, height: 26)
-                .opacity(isMuted ? 0.5 : 1.0)
-                .padding(.top, 2)
-
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    Text("Master Volume")
-                        .font(.system(size: 12, weight: .medium))
-                        .lineLimit(1)
-                        .opacity(isMuted ? 0.5 : 1.0)
-
-                    Spacer()
-
-                    Button(action: onToggleMute) {
-                        Image(systemName: speakerIconName(isMuted: isMuted, volume: volume))
-                            .font(.system(size: 11))
-                            .foregroundStyle(isMuted ? .red : .secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .help(isMuted ? "Unmute" : "Mute")
-
-                    Text("\(Int(volume * 100))%")
-                        .font(.system(size: 11, weight: .regular).monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .frame(width: 32, alignment: .trailing)
-                        .opacity(isMuted ? 0.5 : 1.0)
-                }
-
-                Slider(value: Binding(get: { volume }, set: onVolumeChange), in: 0...1)
-                    .opacity(isMuted ? 0.5 : 1.0)
             }
         }
         .padding(.horizontal, 14)

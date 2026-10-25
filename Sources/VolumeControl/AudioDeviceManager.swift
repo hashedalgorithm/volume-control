@@ -178,25 +178,6 @@ enum AudioDeviceManager {
         _ = AudioObjectSetPropertyData(deviceID, &address, 0, nil, UInt32(MemoryLayout<UInt32>.size), &value)
     }
 
-    static func masterVolume() -> Float? {
-        defaultOutputDeviceID().flatMap(volume(for:))
-    }
-
-    static func setMasterVolume(_ volume: Float) {
-        guard let deviceID = defaultOutputDeviceID() else { return }
-        setVolume(volume, for: deviceID)
-    }
-
-    static func isMasterMuted() -> Bool {
-        guard let deviceID = defaultOutputDeviceID() else { return false }
-        return isMuted(deviceID)
-    }
-
-    static func setMasterMuted(_ muted: Bool) {
-        guard let deviceID = defaultOutputDeviceID() else { return }
-        setMuted(muted, for: deviceID)
-    }
-
     /// Also used to exclude virtual/aggregate devices (e.g. "Microsoft Teams Audio",
     /// Zoom's or our own private tap devices) -- these exist for apps' own internal
     /// routing, aren't real speakers, and picking one as a destination just sends audio
