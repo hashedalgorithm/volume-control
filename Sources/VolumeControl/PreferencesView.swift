@@ -1,3 +1,4 @@
+import AppKit
 import ServiceManagement
 import SwiftUI
 
@@ -56,11 +57,9 @@ struct PreferencesView: View {
             Divider()
 
             VStack(spacing: 6) {
-                Image(systemName: "speaker.wave.2.fill")
-                    .font(.system(size: 36))
-                    .foregroundStyle(.secondary)
+                Image(nsImage: NSApp.applicationIconImage)
+                    .resizable()
                     .frame(width: 64, height: 64)
-                    .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(.secondary.opacity(0.12)))
 
                 Text("Volume Control")
                     .font(.system(size: 15, weight: .bold))
