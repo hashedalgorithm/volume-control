@@ -1,0 +1,92 @@
+name: Release
+
+# Every push to main: build a release .app, package it as a DMG, tag the repo
+# with the next patch version (inferred from the latest existing tag), and
+# publish a GitHub Release with the DMG attached.
+#
+# Versioning: auto-increments PATCH from the latest vX.Y.Z tag (v0.1.0 ->
+# v0.1.1 -> v0.1.2...). To bump minor/major, push that tag yourself
+# (e.g. `git tag v0.2.0 && git push origin v0.2.0`) -- this workflow will
+# pick up from whatever the latest tag is on its next run.
+#
+# Note: VolumeControl.app is ad-hoc signed (no Apple Developer ID), so the
+# DMG isn't notarized -- downloaders will see a Gatekeeper "unidentified
+# developer" warning the first time they open it (right-click -> Open, or
+# System Settings > Privacy & Security). That's a distribution-polish
+# tradeoff, not something this workflow can silently fix without an actual
+# Developer ID certificate.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+# Serializes runs so two pushes landing close together can't both compute the
+# same "next version" from the same latest tag and collide when pushing it.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # need full tag history to compute the next version
+
+      - name: Compute next version
+        id: version
+        run: |
+          latest_tag=$(git tag --list 'v*' --sort=-v:refname | head -n1)
+          if [ -z "$latest_tag" ]; then
+            next_tag="v0.1.0"
+          else
+            version="${latest_tag#v}"
+            major="${version%%.*}"
+            rest="${version#*.}"
+            minor="${rest%%.*}"
+            patch="${rest#*.}"
+            next_tag="v${major}.${minor}.$((patch + 1))"
+          fi
+          echo "Latest tag: ${latest_tag:-<none>}"
+          echo "Next tag: $next_tag"
+          echo "tag=$next_tag" >> "$GITHUB_OUTPUT"
+          echo "version=${next_tag#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app
+
+      - name: Build app bundle
+        env:
+          VC_VERSION: ${{ steps.version.outputs.version }}
+          VC_BUILD: ${{ github.run_number }}
+        run: ./Scripts/make_app_bundle.sh release
+
+      - name: Create DMG
+        run: |
+          mkdir -p dist
+          hdiutil create \
+            -volname "Volume Control" \
+            -srcfolder "$HOME/Applications/VolumeControl.app" \
+            -ov -format UDZO \
+            "dist/VolumeControl-${{ steps.version.outputs.version }}.dmg"
+
+      - name: Tag release
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ steps.version.outputs.tag }}" -m "${{ steps.version.outputs.tag }}"
+          git push origin "${{ steps.version.outputs.tag }}"
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.version.outputs.tag }}" \
+            "dist/VolumeControl-${{ steps.version.outputs.version }}.dmg" \
+            --title "${{ steps.version.outputs.tag }}" \
+            --generate-notes

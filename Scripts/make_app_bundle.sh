@@ -8,6 +8,11 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 CONFIG="${1:-debug}"
+# Overridable so CI can inject the computed release version instead of a fixed
+# placeholder; local dev builds keep the previous defaults unchanged.
+VERSION="${VC_VERSION:-0.1}"
+BUILD_NUMBER="${VC_BUILD:-1}"
+
 swift build -c "$CONFIG"
 
 # Build the virtual mic HAL plugin and embed it as a bundled resource so the app can
@@ -23,7 +28,7 @@ cp "$BIN" "$APP/Contents/MacOS/VolumeControl"
 rm -rf "$APP/Contents/Resources/VolumeControlMicMix.driver"
 cp -R "HALPlugin/VolumeControlMicMix.driver" "$APP/Contents/Resources/VolumeControlMicMix.driver"
 
-cat > "$APP/Contents/Info.plist" <<'EOF'
+cat > "$APP/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -39,9 +44,9 @@ cat > "$APP/Contents/Info.plist" <<'EOF'
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.1</string>
+    <string>$VERSION</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>$BUILD_NUMBER</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.2</string>
     <key>LSUIElement</key>
