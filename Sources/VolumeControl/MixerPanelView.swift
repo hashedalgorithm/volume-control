@@ -668,9 +668,13 @@ private struct AppRowView: View {
                                 }
                             }
                         } label: {
+                            // Same neutral gray and size (10pt) as the device-output
+                            // icon right next to it -- boost being on is already shown
+                            // by the badge and the value label, this button doesn't
+                            // also need to stand out in color.
                             Image(systemName: boostIcon)
                                 .font(.system(size: 10))
-                                .foregroundStyle(row.boost.mode == .off ? Color.secondary : Color.orange)
+                                .foregroundStyle(.secondary)
                         }
                         .menuStyle(.borderlessButton)
                         .fixedSize()
