@@ -1,6 +1,14 @@
 import CoreAudio
 import Foundation
 
+/// Default target backlog for every ring buffer in this app carrying live audio
+/// (mic capture, per-app Input Mixing taps, Output tab per-app routing): ~32ms @
+/// 48kHz, a few periods beyond macOS's typical ~10.7ms (512-frame) native IO
+/// buffer -- enough slack to absorb normal scheduling jitter between the capture
+/// and playback clock domains without letting backlog (and therefore audible
+/// lag) grow unbounded toward each buffer's much larger safety-ceiling capacity.
+let defaultRingBufferLatencyFrames = 1536
+
 /// Minimal lock-protected ring buffer moving non-interleaved Float32 frames from a
 /// CoreAudio IOProc (capture thread) to an `AVAudioSourceNode` render callback
 /// (playback thread). Channel count is fixed on first write; later writes with a
@@ -12,9 +20,16 @@ final class AudioRingBuffer {
     private var readIndex = 0
     private var filled = 0
     private let capacityFrames: Int
+    // Hard ceiling on backlog: without this, a brief stall on the read side (render
+    // thread hiccup, etc.) lets `filled` grow and never shrink back down, since this is
+    // a plain FIFO with no self-correcting mechanism -- lag only accumulates, it never
+    // recovers. Capping it means any such backlog gets silently dropped (oldest frames
+    // first) back down to a small target, trading a rare micro-skip for bounded latency.
+    private let maxLatencyFrames: Int
 
-    init(capacityFrames: Int) {
+    init(capacityFrames: Int, maxLatencyFrames: Int? = nil) {
         self.capacityFrames = capacityFrames
+        self.maxLatencyFrames = maxLatencyFrames ?? capacityFrames
     }
 
     /// Non-interleaved source: one `AudioBuffer` per channel, each holding that
@@ -69,6 +84,11 @@ final class AudioRingBuffer {
     private func advanceWrite(by frameCount: Int) {
         writeIndex = (writeIndex + frameCount) % capacityFrames
         filled = min(capacityFrames, filled + frameCount)
+        if filled > maxLatencyFrames {
+            let excess = filled - maxLatencyFrames
+            readIndex = (readIndex + excess) % capacityFrames
+            filled = maxLatencyFrames
+        }
     }
 
     func read(frameCount: Int, into bufferList: UnsafeMutablePointer<AudioBufferList>) {

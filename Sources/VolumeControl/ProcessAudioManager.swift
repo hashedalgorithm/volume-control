@@ -127,7 +127,7 @@ final class ProcessAudioRoute {
     /// the first call -- see startEngine() for why.
     private var engine = AVAudioEngine()
     private var sourceNode: AVAudioSourceNode?
-    private let ringBuffer = AudioRingBuffer(capacityFrames: 1 << 16)
+    private let ringBuffer = AudioRingBuffer(capacityFrames: 1 << 16, maxLatencyFrames: defaultRingBufferLatencyFrames)
     private var captureFormat = AudioStreamBasicDescription()
     private var currentOutputDeviceUID: String?
     private var formatListenerBlock: AudioObjectPropertyListenerBlock?

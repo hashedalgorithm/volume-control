@@ -61,7 +61,7 @@ private func convertToMixTarget(_ source: AVAudioPCMBuffer, using converter: AVA
 @available(macOS 14.2, *)
 private final class MicMixAppSource {
     let process: AudioProcess
-    let ringBuffer = AudioRingBuffer(capacityFrames: 1 << 16)
+    let ringBuffer = AudioRingBuffer(capacityFrames: 1 << 16, maxLatencyFrames: defaultRingBufferLatencyFrames)
     private(set) var captureFormat = AudioStreamBasicDescription()
 
     private var tapID: AudioObjectID = 0
@@ -69,6 +69,7 @@ private final class MicMixAppSource {
     private var ioProcID: AudioDeviceIOProcID?
     private var converter: AVAudioConverter?
     private var nativeFormat: AVAudioFormat?
+    private var targetFormat: AVAudioFormat?
 
     init(process: AudioProcess) {
         self.process = process
@@ -106,6 +107,7 @@ private final class MicMixAppSource {
         }
         nativeFormat = native
         let targetFormat = makeMixTargetFormat()
+        self.targetFormat = targetFormat
         guard let converter = AVAudioConverter(from: native, to: targetFormat) else {
             throw CoreAudioError.osStatus(kAudio_ParamError, "could not build app source format converter")
         }
@@ -177,9 +179,9 @@ private final class MicMixAppSource {
     private func startIOProc() throws {
         var procID: AudioDeviceIOProcID?
         let status = AudioDeviceCreateIOProcIDWithBlock(&procID, aggregateDeviceID, nil) { [weak self] _, inInputData, _, _, _ in
-            guard let self, let native = self.nativeFormat, let converter = self.converter else { return }
+            guard let self, let native = self.nativeFormat, let converter = self.converter, let targetFormat = self.targetFormat else { return }
             guard let sourceBuffer = AVAudioPCMBuffer(pcmFormat: native, bufferListNoCopy: inInputData) else { return }
-            guard let converted = convertToMixTarget(sourceBuffer, using: converter, targetFormat: makeMixTargetFormat()) else { return }
+            guard let converted = convertToMixTarget(sourceBuffer, using: converter, targetFormat: targetFormat) else { return }
             self.ringBuffer.write(from: converted.audioBufferList)
         }
         try AudioDeviceManager.check(status, "create mic-mix tap IOProc")
@@ -235,7 +237,7 @@ final class InputMixEngine: ObservableObject {
     @Published private(set) var isInstalling = false
     @Published var installError: String?
 
-    private let micRingBuffer = AudioRingBuffer(capacityFrames: 1 << 16)
+    private let micRingBuffer = AudioRingBuffer(capacityFrames: 1 << 16, maxLatencyFrames: defaultRingBufferLatencyFrames)
     /// Raw CoreAudio IOProc bound directly to the real mic's AudioDeviceID -- not
     /// AVAudioEngine. See startMicCapture's own comment for why: AVAudioEngine's input
     /// node either gets the hardware's raw, unprocessed multi-element array signal
@@ -329,7 +331,7 @@ final class InputMixEngine: ObservableObject {
                 claimDefaultInputDevice()
                 startWatchingDefaultInputDevice()
             } catch {
-                // debugProbeAppend("failed to start input mix engine: \(error)")
+                debugProbeAppend("failed to start input mix engine: \(error)")
             }
         } else {
             isEnabled = false
@@ -338,10 +340,10 @@ final class InputMixEngine: ObservableObject {
             // Only restore it if it's still actually connected -- forcing the
             // default back onto a device that's since been unplugged would just
             // leave the user with no working input at all.
-            // debugProbeAppend("setEnabled(false) restore: previousUID=\(previousDefaultInputDeviceUID ?? "nil")")
+            debugProbeAppend("setEnabled(false) restore: previousUID=\(previousDefaultInputDeviceUID ?? "nil")")
             if let uid = previousDefaultInputDeviceUID, let deviceID = AudioDeviceManager.deviceID(forUID: uid) {
                 let ok = AudioDeviceManager.setDefaultInputDevice(deviceID)
-                // debugProbeAppend("setEnabled(false) restore result=\(ok) deviceID=\(deviceID)")
+                debugProbeAppend("setEnabled(false) restore result=\(ok) deviceID=\(deviceID)")
             }
             previousDefaultInputDeviceUID = nil
         }
@@ -417,7 +419,7 @@ final class InputMixEngine: ObservableObject {
                     do {
                         try addAppSource(process)
                     } catch {
-                        // debugProbeAppend("failed to add mic-mix source for \(process.bundleID): \(error)")
+                        debugProbeAppend("failed to add mic-mix source for \(process.bundleID): \(error)")
                     }
                 }
             }
@@ -468,7 +470,7 @@ final class InputMixEngine: ObservableObject {
                 do {
                     try addAppSource(process)
                 } catch {
-                    // debugProbeAppend("failed to add mic-mix source for \(process.bundleID): \(error)")
+                    debugProbeAppend("failed to add mic-mix source for \(process.bundleID): \(error)")
                 }
             }
         }
@@ -499,10 +501,10 @@ final class InputMixEngine: ObservableObject {
         // the system back its real input device too -- otherwise the user's left
         // with no working microphone until they notice and fix it manually, same
         // as if setEnabled(false) had never run its own restore step below.
-        // debugProbeAppend("shutdown() restore: previousUID=\(previousDefaultInputDeviceUID ?? "nil")")
+        debugProbeAppend("shutdown() restore: previousUID=\(previousDefaultInputDeviceUID ?? "nil")")
         if let uid = previousDefaultInputDeviceUID, let deviceID = AudioDeviceManager.deviceID(forUID: uid) {
             let ok = AudioDeviceManager.setDefaultInputDevice(deviceID)
-            // debugProbeAppend("shutdown() restore result=\(ok) deviceID=\(deviceID)")
+            debugProbeAppend("shutdown() restore result=\(ok) deviceID=\(deviceID)")
         }
         previousDefaultInputDeviceUID = nil
     }
@@ -560,7 +562,13 @@ final class InputMixEngine: ObservableObject {
         return formatter
     }()
 
+    /// Debug-only instrumentation (compiles to nothing in Release) -- writes to a
+    /// fixed /tmp path rather than NSLog, which was confirmed unreliable for this
+    /// code path (entries didn't show up in `log show` even when the code
+    /// demonstrably ran). Gated on #if DEBUG rather than relying on remembering to
+    /// comment call sites out before each release build.
     private func debugProbeAppend(_ line: String) {
+        #if DEBUG
         let path = "/tmp/vc-debug-probe.log"
         let timestamp = Self.debugTimeFormatter.string(from: Date())
         guard let data = ("\(timestamp) \(line)\n").data(using: .utf8) else { return }
@@ -571,10 +579,11 @@ final class InputMixEngine: ObservableObject {
         } else {
             FileManager.default.createFile(atPath: path, contents: data)
         }
+        #endif
     }
 
     private func start() throws {
-        // debugProbeAppend("start() called")
+        debugProbeAppend("start() called")
         guard let micMixDeviceID = AudioDeviceManager.deviceID(forUID: micMixDeviceUID) else {
             throw CoreAudioError.osStatus(kAudio_ParamError, "mic mix device not found")
         }
@@ -591,12 +600,12 @@ final class InputMixEngine: ObservableObject {
             guard let fallback = AudioDeviceManager.inputDevices().first else {
                 throw CoreAudioError.osStatus(kAudio_ParamError, "no real (non-virtual) input device found")
             }
-            // debugProbeAppend("default input was mic-mix itself or missing -- falling back to \(fallback.name)")
+            debugProbeAppend("default input was mic-mix itself or missing -- falling back to \(fallback.name)")
             realMicDeviceID = fallback.id
         }
         try startMicCapture(on: realMicDeviceID!)
         try startMixOutputIOProc(deviceID: micMixDeviceID)
-        // debugProbeAppend("mix output IOProc started")
+        debugProbeAppend("mix output IOProc started")
     }
 
     /// Raw CoreAudio IOProc bound directly to `deviceID` -- not AVAudioEngine. See the
@@ -611,7 +620,7 @@ final class InputMixEngine: ObservableObject {
         guard let native = AVAudioFormat(streamDescription: &nativeFormatDescription) else {
             throw CoreAudioError.osStatus(kAudio_ParamError, "could not describe mic capture format")
         }
-        // debugProbeAppend("mic native format (direct device IOProc)=\(native)")
+        debugProbeAppend("mic native format (direct device IOProc)=\(native)")
 
         let targetFormat = makeMixTargetFormat()
         guard let converter = AVAudioConverter(from: native, to: targetFormat) else {
@@ -631,7 +640,7 @@ final class InputMixEngine: ObservableObject {
         micIOProcID = procID
         micDeviceID = deviceID
         try AudioDeviceManager.check(AudioDeviceStart(deviceID, procID), "start mic capture IOProc")
-        // debugProbeAppend("mic capture IOProc started on device=\(deviceID)")
+        debugProbeAppend("mic capture IOProc started on device=\(deviceID)")
     }
 
     /// Mirrors MicMixAppSource.queryCaptureFormat() -- same query, just against a real
@@ -674,7 +683,7 @@ final class InputMixEngine: ObservableObject {
         try source.start()
         appSources[process.pid] = source
         rebuildLiveMixSources()
-        // debugProbeAppend("addAppSource(\(process.bundleID)) started, volume=\(mixVolumes[process.pid] ?? 1.0)")
+        debugProbeAppend("addAppSource(\(process.bundleID)) started, volume=\(mixVolumes[process.pid] ?? 1.0)")
     }
 
     private func removeAppSource(pid: pid_t) {
@@ -683,7 +692,7 @@ final class InputMixEngine: ObservableObject {
         appSources[pid] = nil
         missingStreak[pid] = nil
         rebuildLiveMixSources()
-        // debugProbeAppend("removeAppSource(\(bundleID)) stopped, remaining=\(appSources.count)")
+        debugProbeAppend("removeAppSource(\(bundleID)) stopped, remaining=\(appSources.count)")
     }
 
     /// Snapshot of (ringBuffer, volume) for every currently-included app source, read
@@ -790,7 +799,7 @@ final class InputMixEngine: ObservableObject {
             let ap = appPeakTotal
             let sourceCount = sources.count
             DispatchQueue.main.async { [weak self] in
-                // self?.debugProbeAppend("MIX OUTPUT peak=\(p) mic=\(mp) app=\(ap) sources=\(sourceCount)")
+                self?.debugProbeAppend("MIX OUTPUT peak=\(p) mic=\(mp) app=\(ap) sources=\(sourceCount)")
             }
         }
     }

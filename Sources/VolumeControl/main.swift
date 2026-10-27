@@ -41,7 +41,7 @@ func runApp() {
     let controller = PopoverController()
     appControllerBox = controller
     // NSApplication.delegate is weak -- appControllerBox above is what actually keeps
-    // the controller alive; this just lets applicationWillTerminate (PopoverController's
+    // the controller alive; this just lets applicationShouldTerminate (PopoverController's
     // real teardown path, see its own comment) receive the notification.
     app.delegate = controller
     app.run()
