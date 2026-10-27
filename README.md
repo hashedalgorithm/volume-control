@@ -13,8 +13,8 @@ framework or kernel extension. The virtual microphone device is a from-scratch
 **Output tab**
 - Per-app volume, mute, and output-device routing — every app playing audio
   gets a live slider the moment it starts, no manual setup per app.
-- Master Volume (the real system output volume, same one the volume keys
-  move) and a pinned System Sounds control for alerts/notifications.
+- A pinned System Sounds control for alerts/notifications, alongside every
+  other app.
 - Device Levels — macOS's own per-device stored volume/mute for every
   connected output device, exposed directly (this is why a Bluetooth headset
   and the built-in speakers can sound very different at "the same" volume).
@@ -98,9 +98,12 @@ permission prompt. Both are one-time, standard macOS TCC prompts.
   samples are re-rendered through an `AVAudioEngine` bound to whichever
   output device is chosen, at the chosen volume. No virtual driver needed
   for this part — see `Sources/VolumeControl/ProcessAudioManager.swift`.
-- **Mic mixing**: the real microphone (captured via a plain `AVAudioEngine`
-  input tap) and any selected apps' tapped audio are combined by one
-  `AVAudioEngine` whose output is bound to the virtual mic device — see
+- **Mic mixing**: the real microphone and each selected app's tapped audio
+  are captured via raw CoreAudio IOProcs (not `AVAudioEngine` — its input
+  node proved unreliable both when pinned to a specific device and when
+  left to follow the system default), resampled to a common format, and
+  summed sample-by-sample with soft limiting in a dedicated output IOProc
+  bound to the virtual mic device — see
   `Sources/VolumeControl/InputMixEngine.swift`.
 - **Virtual mic device**: `HALPlugin/VolumeControlMicMix.driver`, a minimal
   CoreAudio `AudioServerPlugIn` written directly against Apple's
@@ -144,10 +147,7 @@ docs/install-micmix.md          manual install steps for the virtual mic
 
 ## Contributing
 
-Issues and pull requests are welcome. For anything audio-pipeline-related
-(the process tap / HAL plugin code), please include what you tested it on
-(output device type, whether Bluetooth was involved) — a lot of the bugs
-found so far have been device-specific.
+Issues and pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
