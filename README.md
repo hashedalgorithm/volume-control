@@ -5,7 +5,6 @@ per-device volume levels, and a mic-mixer for calls.
 
 <img width="531" height="425" alt="Screenshot 2026-10-27 at 20 31 25" src="https://github.com/user-attachments/assets/322e6968-ddbb-426e-8d85-0126c04d89f7" />
 
-
 Built entirely on Apple's public CoreAudio APIs — in particular the process-tap
 API (`AudioHardwareCreateProcessTap`, macOS 14.2+) — rather than any private
 framework or kernel extension. The virtual microphone device is a from-scratch
