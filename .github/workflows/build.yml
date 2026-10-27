@@ -1,0 +1,25 @@
+name: Build
+
+# Build-only check for pull requests against main -- no packaging, signing,
+# or tagging (see release.yml for that). Just confirms the Swift package and
+# the HAL plugin still compile before a PR is allowed to merge.
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app
+
+      - name: Build Swift package
+        run: swift build
+
+      - name: Build HAL plugin
+        run: ./HALPlugin/build.sh
