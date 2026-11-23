@@ -160,6 +160,23 @@ enum AudioDeviceManager {
         return stringProperty(deviceID, selector: kAudioDevicePropertyDeviceUID)
     }
 
+    /// Switches which device the system (Control Center, every untapped app) treats as
+    /// the main output -- same property the Sound settings pane's Output picker writes.
+    /// Used by output-priority routing to redirect everything, not just this app's own
+    /// per-process routes, when the preferred device becomes available.
+    @discardableResult
+    static func setDefaultOutputDevice(_ deviceID: AudioObjectID) -> Bool {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var mutableDeviceID = deviceID
+        let status = AudioObjectSetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil,
+                                                 UInt32(MemoryLayout<AudioObjectID>.size), &mutableDeviceID)
+        return status == noErr
+    }
+
     static func defaultInputDeviceUID() -> String? {
         guard let deviceID = defaultInputDeviceID() else { return nil }
         return stringProperty(deviceID, selector: kAudioDevicePropertyDeviceUID)
@@ -235,6 +252,48 @@ enum AudioDeviceManager {
         )
         var value: UInt32 = muted ? 1 : 0
         _ = AudioObjectSetPropertyData(deviceID, &address, 0, nil, UInt32(MemoryLayout<UInt32>.size), &value)
+    }
+
+    /// Startup self-healing for the "popup stops responding after an abrupt shutdown,
+    /// doesn't recover even after killing coreaudiod and this app" bug: a hard power
+    /// loss or force-quit skips ProcessAudioRoute.stop()/InputMixEngine's own teardown,
+    /// which is what normally destroys every per-app tap aggregate device this app
+    /// creates (see their "com.volumecontrol.tap." / "com.volumecontrol.micmixtap."
+    /// UID prefixes). Those orphaned aggregates stay registered with coreaudiod
+    /// indefinitely -- confirmed directly: they survive a plain `killall coreaudiod`,
+    /// since that only restarts the daemon, not the on-disk/registered device list --
+    /// and CoreAudio's process-tap bookkeeping is a finite resource, making repeated
+    /// unclean shutdowns the leading suspect for new tap creation eventually hanging
+    /// instead of failing outright. Run once at launch, before this session creates any
+    /// of its own aggregates, so a fresh run can't mistake its own for an orphan.
+    /// Returns the number cleaned up, for ErrorLogger to record.
+    @discardableResult
+    static func cleanUpOrphanedAggregateDevices() -> Int {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var dataSize: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &dataSize) == noErr else {
+            return 0
+        }
+        let count = Int(dataSize) / MemoryLayout<AudioObjectID>.size
+        var ids = [AudioObjectID](repeating: 0, count: count)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &dataSize, &ids) == noErr else {
+            return 0
+        }
+
+        let orphanPrefixes = ["com.volumecontrol.tap.", "com.volumecontrol.micmixtap."]
+        var cleaned = 0
+        for deviceID in ids {
+            guard let uid = stringProperty(deviceID, selector: kAudioDevicePropertyDeviceUID) else { continue }
+            guard orphanPrefixes.contains(where: uid.hasPrefix) else { continue }
+            if AudioHardwareDestroyAggregateDevice(deviceID) == noErr {
+                cleaned += 1
+            }
+        }
+        return cleaned
     }
 
     /// Also used to exclude virtual/aggregate devices (e.g. "Microsoft Teams Audio",
