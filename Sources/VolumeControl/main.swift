@@ -36,6 +36,15 @@ private func quitIfAnotherInstanceIsRunning() {
 @available(macOS 14.2, *)
 func runApp() {
     quitIfAnotherInstanceIsRunning()
+    UserDefaults.standard.register(defaults: [
+        PreferenceKeys.closeOnOutsideClick: true,
+        PreferenceKeys.autoHideEnabled: false,
+        PreferenceKeys.autoHideSeconds: 10.0
+    ])
+    let orphaned = AudioDeviceManager.cleanUpOrphanedAggregateDevices()
+    if orphaned > 0 {
+        ErrorLogger.shared.warning("startup: cleaned up \(orphaned) orphaned aggregate device(s) left behind by a previous unclean shutdown")
+    }
     let app = NSApplication.shared
     app.setActivationPolicy(.accessory) // menu-bar-only, no Dock icon
     let controller = PopoverController()

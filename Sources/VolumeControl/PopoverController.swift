@@ -18,12 +18,14 @@ final class PopoverController: NSObject, NSApplicationDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     private let model = AudioMixerModel()
     private let inputModel = InputMixEngine()
+    private let updateChecker = UpdateChecker()
     private let preferencesWindowController = PreferencesWindowController()
     private let hostingController: NSHostingController<MixerPanelView>
     private let panel: AnchoredPanel
     private var outsideClickMonitor: Any?
     private var keyDownMonitor: Any?
     private var frameObserver: NSObjectProtocol?
+    private var autoHideTimer: Timer?
 
     override init() {
         let rootView = MixerPanelView(model: model, inputModel: inputModel, onQuit: {}, onClose: {}, onPreferences: {})
@@ -42,8 +44,9 @@ final class PopoverController: NSObject, NSApplicationDelegate {
             onQuit: { [weak self] in self?.quit() },
             onClose: { [weak self] in self?.close() },
             onPreferences: { [weak self] in
-                self?.close()
-                self?.preferencesWindowController.show()
+                guard let self else { return }
+                self.close()
+                self.preferencesWindowController.show(model: self.model, updateChecker: self.updateChecker)
             }
         )
 
@@ -76,6 +79,22 @@ final class PopoverController: NSObject, NSApplicationDelegate {
             reposition()
             panel.makeKeyAndOrderFront(nil)
             startOutsideDismissMonitors()
+            startAutoHideTimerIfNeeded()
+        }
+    }
+
+    /// Preferences-configurable: closes the popup on its own after N seconds, for
+    /// anyone who'd rather it not linger than rely on remembering to click away.
+    /// Read fresh from UserDefaults (registered with a `false`/`30` default in
+    /// main.swift) every time the popup opens, so a change in Preferences takes
+    /// effect on the very next open rather than needing a relaunch.
+    private func startAutoHideTimerIfNeeded() {
+        autoHideTimer?.invalidate()
+        autoHideTimer = nil
+        guard UserDefaults.standard.bool(forKey: PreferenceKeys.autoHideEnabled) else { return }
+        let seconds = UserDefaults.standard.double(forKey: PreferenceKeys.autoHideSeconds)
+        autoHideTimer = Timer.scheduledTimer(withTimeInterval: seconds, repeats: false) { [weak self] _ in
+            self?.close()
         }
     }
 
@@ -103,6 +122,7 @@ final class PopoverController: NSObject, NSApplicationDelegate {
 
     private func startOutsideDismissMonitors() {
         outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+            guard UserDefaults.standard.bool(forKey: PreferenceKeys.closeOnOutsideClick) else { return }
             self?.close()
         }
         keyDownMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
@@ -117,6 +137,8 @@ final class PopoverController: NSObject, NSApplicationDelegate {
         if let keyDownMonitor { NSEvent.removeMonitor(keyDownMonitor) }
         outsideClickMonitor = nil
         keyDownMonitor = nil
+        autoHideTimer?.invalidate()
+        autoHideTimer = nil
     }
 
     private func quit() {

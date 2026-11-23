@@ -55,6 +55,15 @@ struct AppMixPreference: Codable {
 /// comment. `.off` applies no extra gain; `.auto` continuously measures the captured
 /// signal and compensates on its own; `.preset`/`.custom` apply a fixed extra
 /// percentage (`percent`), unused by `.auto`.
+///
+/// `.custom` has no UI entry point anymore (removed as unnecessary now that `.preset`
+/// covers it) but stays a valid case so decoding an older install's persisted
+/// preferences never fails -- `PersistedStore`'s decode discards the *entire* stored
+/// dictionary on any single entry it can't decode, so dropping this case outright would
+/// have silently wiped every app's saved boost setting, not just custom ones. Gain math
+/// and display already treat `.custom` identically to `.preset` (see
+/// ProcessAudioRoute.applyGain and MixerPanelView's formatBoostPercent), so a legacy
+/// value just keeps working as-is; it's simply unreachable from the UI going forward.
 enum BoostMode: String, Codable {
     case off, auto, preset, custom
 }

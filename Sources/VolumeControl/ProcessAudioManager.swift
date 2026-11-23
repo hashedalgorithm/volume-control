@@ -137,6 +137,26 @@ final class ProcessAudioRoute {
         didSet { applyGain() }
     }
 
+    /// App-wide extra multiplier on top of this route's own volume and boost --
+    /// user-adjustable in Preferences, applied identically to every route rather
+    /// than per-app (that's what the existing boost mode/percent above is for).
+    /// Pushed in by AudioMixerModel whenever the Preferences slider changes, and
+    /// whenever a new route starts, so it's never stale.
+    var globalMultiplier: Float = 1.0 {
+        didSet { applyGain() }
+    }
+
+    /// Device Levels' per-device "group volume" -- 1.0 unless this route currently has
+    /// an *explicit* output device binding (a per-app pick, or priority routing) with
+    /// its own group-volume slider set below 100% (or muted, 0.0). Kept at 1.0 whenever
+    /// there's no explicit binding at all, since AVAudioEngine's own implicit
+    /// default-output routing already gets its volume from that device's native
+    /// CoreAudio property; see AudioMixerModel.applyDeviceGroupMultipliers, which is
+    /// what keeps this in sync with whichever device the route is actually bound to.
+    var deviceGroupMultiplier: Float = 1.0 {
+        didSet { applyGain() }
+    }
+
     // MARK: - Boost
     //
     // Core Audio's process tap applies its own internal loudness-compensation when it
@@ -191,7 +211,7 @@ final class ProcessAudioRoute {
         case .auto: boost = autoMultiplier
         case .preset, .custom: boost = 1.0 + Float(boostPercent / 100.0)
         }
-        engine.mainMixerNode.outputVolume = volume * boost
+        engine.mainMixerNode.outputVolume = volume * boost * globalMultiplier * deviceGroupMultiplier
     }
 
     private func startAutoGain() {

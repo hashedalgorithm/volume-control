@@ -359,87 +359,17 @@ private struct BoostBadgeView: View {
     }
 }
 
-/// Inline field that appears under an app row once its boost mode is Custom -- typed
-/// percentage is clamped to 10.00...100.00 and rounded to at most 2 decimals on commit
-/// (Return), matching setBoostPercent's contract.
-@available(macOS 14.2, *)
-private struct CustomBoostFieldView: View {
-    let initialPercent: Double
-    let onCommit: (Double) -> Void
-
-    @State private var text: String = ""
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Text("Custom boost")
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
-
-            // .roundedBorder (visibly boxed, like a real input) instead of .plain --
-            // a borderless field here read as static text, not something editable.
-            TextField("10\u{2013}100", text: $text)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(size: 10).monospacedDigit())
-                .multilineTextAlignment(.trailing)
-                .frame(width: 52)
-                .onSubmit(commit)
-
-            Text("%")
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
-
-            // Explicit save/cancel rather than relying only on Return -- it wasn't
-            // clear typing alone did (or didn't) save anything. Cancel reverts the
-            // field to the last saved percent without applying the typed value. Only
-            // shown once the field actually differs from the saved value, right next
-            // to the field rather than floated to the row's far end.
-            if isDirty {
-                Button(action: commit) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.system(size: 13))
-                        .foregroundStyle(.green)
-                }
-                .buttonStyle(.plain)
-                .help("Save")
-
-                Button(action: cancel) {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 13))
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .help("Cancel")
-            }
-        }
-        .onAppear { text = Self.format(initialPercent) }
-    }
-
-    private var isDirty: Bool {
-        text != Self.format(initialPercent)
-    }
-
-    private func commit() {
-        guard let parsed = Double(text) else {
-            text = Self.format(initialPercent)
-            return
-        }
-        let clamped = min(100, max(10, (parsed * 100).rounded() / 100))
-        text = Self.format(clamped)
-        onCommit(clamped)
-    }
-
-    private func cancel() {
-        text = Self.format(initialPercent)
-    }
-
-    fileprivate static func format(_ value: Double) -> String {
-        let rounded = (value * 100).rounded() / 100
-        if rounded == rounded.rounded() { return String(format: "%.0f", rounded) }
-        var formatted = String(format: "%.2f", rounded)
-        while formatted.hasSuffix("0") { formatted.removeLast() }
-        if formatted.hasSuffix(".") { formatted.removeLast() }
-        return formatted
-    }
+/// Formats a boost percentage for display (e.g. "40" or "33.5") -- shared by the boost
+/// menu's help text/value label. Also still correctly formats a legacy ".custom" boost
+/// percentage (see BoostMode's doc comment), since the UI to create new custom values
+/// was removed but the gain math and display still treat it identically to a preset.
+private func formatBoostPercent(_ value: Double) -> String {
+    let rounded = (value * 100).rounded() / 100
+    if rounded == rounded.rounded() { return String(format: "%.0f", rounded) }
+    var formatted = String(format: "%.2f", rounded)
+    while formatted.hasSuffix("0") { formatted.removeLast() }
+    if formatted.hasSuffix(".") { formatted.removeLast() }
+    return formatted
 }
 
 @available(macOS 14.2, *)
@@ -473,7 +403,7 @@ private struct AppRowView: View {
         switch row.boost.mode {
         case .off: return "Boost: Off"
         case .auto: return "Boost: Auto"
-        case .preset, .custom: return "Boost: +\(CustomBoostFieldView.format(row.boost.percent))%"
+        case .preset, .custom: return "Boost: +\(formatBoostPercent(row.boost.percent))%"
         }
     }
 
@@ -481,7 +411,7 @@ private struct AppRowView: View {
         switch row.boost.mode {
         case .off: return ""
         case .auto: return "Auto"
-        case .preset, .custom: return "+\(CustomBoostFieldView.format(row.boost.percent))%"
+        case .preset, .custom: return "+\(formatBoostPercent(row.boost.percent))%"
         }
     }
 
@@ -610,14 +540,6 @@ private struct AppRowView: View {
                                     }
                                 }
                             }
-                            Button {
-                                onBoostModeChange(.custom)
-                            } label: {
-                                HStack {
-                                    Text("Custom\u{2026}")
-                                    if row.boost.mode == .custom { Spacer(); Image(systemName: "checkmark") }
-                                }
-                            }
                         } label: {
                             // Same neutral gray and size (10pt) as the device-output
                             // icon right next to it -- boost being on is already shown
@@ -640,11 +562,6 @@ private struct AppRowView: View {
                         }
                     }
 
-                    if row.boost.mode == .custom {
-                        CustomBoostFieldView(initialPercent: row.boost.percent) { percent in
-                            onBoostPercentChange(percent, .custom)
-                        }
-                    }
                 }
             }
         }

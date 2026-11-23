@@ -9,14 +9,14 @@ import SwiftUI
 final class PreferencesWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
 
-    func show() {
+    func show(model: AudioMixerModel, updateChecker: UpdateChecker) {
         if let window {
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
         }
 
-        let hosting = NSHostingController(rootView: PreferencesView())
+        let hosting = NSHostingController(rootView: PreferencesView(model: model, updateChecker: updateChecker))
         let newWindow = NSWindow(contentViewController: hosting)
         newWindow.title = "Volume Control Preferences"
         newWindow.styleMask = [.titled, .closable]
