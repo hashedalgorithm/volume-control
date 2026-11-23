@@ -1,8 +1,10 @@
 name: Release
 
-# Every push to main: build a release .app, package it as a DMG, tag the repo
-# with the next patch version (inferred from the latest existing tag), and
-# publish a GitHub Release with the DMG attached.
+# Every push to main: build a release .app, package it as a DMG (full installer)
+# and a small OTA update zip (just the binaries that change between versions --
+# see UpdateChecker.swift, which downloads this instead of the DMG), tag the
+# repo with the next patch version (inferred from the latest existing tag), and
+# publish a GitHub Release with both attached.
 #
 # Versioning: auto-increments PATCH from the latest vX.Y.Z tag (v0.1.0 ->
 # v0.1.1 -> v0.1.2...). To bump minor/major, push that tag yourself
@@ -80,6 +82,20 @@ jobs:
             -ov -format UDZO \
             "dist/VolumeControl-${{ steps.version.outputs.version }}.dmg"
 
+      - name: Create OTA update package
+        run: |
+          # Just the two binaries that actually change between versions (the app
+          # executable and the HAL plugin's driver binary), not the whole .app
+          # bundle -- lets in-app auto-update download a few MB instead of
+          # re-fetching and remounting a full DMG for every release. The app's own
+          # UpdateChecker.swift looks for an asset matching this exact filename
+          # pattern; keep them in sync if this ever changes.
+          APP="$HOME/Applications/VolumeControl.app"
+          mkdir -p dist/ota-stage
+          cp "$APP/Contents/MacOS/VolumeControl" dist/ota-stage/
+          cp "$APP/Contents/Resources/VolumeControlMicMix.driver/Contents/MacOS/VolumeControlMicMix" dist/ota-stage/
+          (cd dist/ota-stage && zip -q -X "../VolumeControl-update-${{ steps.version.outputs.version }}.zip" VolumeControl VolumeControlMicMix)
+
       - name: Tag release
         run: |
           git config user.name "github-actions[bot]"
@@ -93,5 +109,6 @@ jobs:
         run: |
           gh release create "${{ steps.version.outputs.tag }}" \
             "dist/VolumeControl-${{ steps.version.outputs.version }}.dmg" \
+            "dist/VolumeControl-update-${{ steps.version.outputs.version }}.zip" \
             --title "${{ steps.version.outputs.tag }}" \
             --generate-notes
